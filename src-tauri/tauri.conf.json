@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "发票助手",
+  "version": "1.0.0",
+  "identifier": "com.mrmonarch.invoice-assistant",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "发票助手",
+        "label": "main",
+        "width": 1280,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "category": "Productivity",
+    "shortDescription": "PDF 发票批量处理工具",
+    "longDescription": "发票助手 - 扫描工作目录中的电子发票 PDF，识别字段、按报销类别筛选、批量输出费用台账、报销封面与汇总 PDF。",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../static/poppler/Library/bin/pdftotext.exe": "poppler/pdftotext.exe",
+      "../static/poppler/Library/bin/poppler.dll": "poppler/poppler.dll",
+      "../static/poppler/Library/bin/poppler-cpp.dll": "poppler/poppler-cpp.dll",
+      "../static/poppler/Library/bin/libcrypto-3-x64.dll": "poppler/libcrypto-3-x64.dll"
+    },
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "rpm": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.13"
+    }
+  }
+}
