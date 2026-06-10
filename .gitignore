@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.class
+*.dll
+*.exe
+*.pdb
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+node_modules/
+dist/
+build/
+releases/
+*.log
