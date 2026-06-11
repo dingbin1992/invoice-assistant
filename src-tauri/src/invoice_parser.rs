@@ -4,6 +4,7 @@ use std::process::Command;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ParsedInvoice {
@@ -50,27 +51,45 @@ fn parse_one(path: &str) -> ParsedInvoice {
         }
     };
     if !looks_like_invoice(&text) {
-        inv.error = Some("非发票PDF,已跳过".into());
+        let snippet: String = text.chars().filter(|c| !c.is_whitespace()).take(40).collect();
+        inv.error = Some(format!("非发票(特征不足),已跳过 [{}]", snippet));
         return inv;
     }
     inv.is_invoice_pdf = true;
-    inv.invoice_type = detect_invoice_type(&text);
-    inv.issue_date = extract_issue_date(&text);
-    inv.invoice_no = extract_invoice_no(&text);
-    inv.amount = extract_amount(&text);
-    inv.buyer = extract_buyer(&text);
-    inv.project_name = extract_project_name(&text);
+    if text.contains("铁路电子客票") || text.contains("铁路") {
+        inv.invoice_type = "普通发票".to_string();
+        inv.project_name = "*铁路电子客票*".to_string();
+        inv.issue_date = train_extract_date(&text);
+        inv.invoice_no = extract_invoice_no(&text);
+        inv.amount = train_extract_amount(&text);
+        inv.buyer = train_extract_buyer(&text);
+    } else {
+        inv.invoice_type = detect_invoice_type(&text);
+        inv.issue_date = extract_issue_date(&text);
+        inv.invoice_no = extract_invoice_no(&text);
+        inv.amount = extract_amount(&text);
+        inv.buyer = extract_buyer(&text);
+        inv.project_name = extract_project_name(&text);
+    }
     inv
 }
 
 /// 优先用 poppler pdftotext, 失败时回退到 lopdf 提取
 fn extract_text(path: &str) -> Result<String, String> {
-    if let Some(s) = run_pdftotext(path) {
+    let raw = if let Some(s) = run_pdftotext(path) {
         if !s.trim().is_empty() {
-            return Ok(s);
+            s
+        } else {
+            fallback_lopdf(path)?
         }
-    }
-    // 回退 lopdf (UniGB-UCS2-H 时 CMap 会失败, 但至少能拿到部分字段)
+    } else {
+        fallback_lopdf(path)?
+    };
+    // NFKD 归一化: 兼容字符(如⼦→子)统一为常规汉字, 否则正则匹配失败
+    Ok(raw.nfkd().collect::<String>())
+}
+
+fn fallback_lopdf(path: &str) -> Result<String, String> {
     let doc = lopdf::Document::load(Path::new(path)).map_err(|e| e.to_string())?;
     let mut out = String::new();
     let pages = doc.get_pages();
@@ -90,13 +109,14 @@ fn run_pdftotext(pdf_path: &str) -> Option<String> {
     let exe = locate_pdftotext()?;
     let output = Command::new(&exe)
         .arg("-layout")
+        .arg("-enc")
+        .arg("UTF-8")
         .arg(pdf_path)
         .arg("-")
         .output()
         .ok()?;
     if !output.status.success() { return None; }
     let bytes = output.stdout;
-    // pdftotext 26.02 默认 UTF-8 (chcp 65001 时), 但 Windows 旧版可能是 GBK
     if let Ok(s) = std::str::from_utf8(&bytes) { return Some(s.to_string()); }
     let (s, _, had) = encoding_rs::GBK.decode(&bytes);
     if !had { return Some(s.into_owned()); }
@@ -104,47 +124,30 @@ fn run_pdftotext(pdf_path: &str) -> Option<String> {
 }
 
 fn locate_pdftotext() -> Option<PathBuf> {
-    // 1) 环境变量 INVOICE_PDFTOTEXT
     if let Ok(p) = std::env::var("INVOICE_PDFTOTEXT") {
         let pb = PathBuf::from(p);
         if pb.exists() { return Some(pb); }
     }
-    // 2) 应用自带: exe 同级或相对目录
     if let Ok(exe) = std::env::current_exe() {
-        let dir = exe.parent()?.to_path_buf();
-        // 打包后: <install>/poppler/pdftotext.exe (resources 映射)
-        for rel in [
-            "poppler/pdftotext.exe",
-            "resources/poppler/pdftotext.exe",
-            "../poppler/pdftotext.exe",
+        let exe_dir = exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+        for rel in &[
+            "poppler/Library/bin/pdftotext.exe",
+            "_up_/static/poppler/Library/bin/pdftotext.exe",
         ] {
-            let cand = dir.join(rel);
-            if cand.exists() { return Some(cand); }
-        }
-        // 开发期: 从工程根目录的 static/poppler/...
-        if let Ok(cwd) = std::env::current_dir() {
-            for sub in [
-                "static/poppler/Library/bin/pdftotext.exe",
-                "static/poppler/poppler-26.02.0/Library/bin/pdftotext.exe",
-            ] {
-                let cand = cwd.join(sub);
-                if cand.exists() { return Some(cand); }
-            }
-            for p in [&cwd.join(".."), &cwd.join("../..")] {
-                for sub in [
-                    "static/poppler/Library/bin/pdftotext.exe",
-                    "static/poppler/poppler-26.02.0/Library/bin/pdftotext.exe",
-                ] {
-                    let cand = p.join(sub);
-                    if cand.exists() { return Some(cand); }
-                }
-            }
+            let c = exe_dir.join(rel);
+            if c.exists() { return Some(c); }
         }
     }
-    // 3) PATH 中查找
-    for ext in &["", ".exe"] {
-        if let Ok(p) = which("pdftotext", ext) { return Some(p); }
+    if let Ok(cwd) = std::env::current_dir() {
+        for sub in &[
+            "src-tauri/poppler/Library/bin/pdftotext.exe",
+            "static/poppler/Library/bin/pdftotext.exe",
+        ] {
+            let c = cwd.join(sub);
+            if c.exists() { return Some(c); }
+        }
     }
+    if let Ok(p) = which("pdftotext", ".exe") { return Some(p); }
     None
 }
 
@@ -158,15 +161,19 @@ fn which(cmd: &str, ext: &str) -> Result<PathBuf, ()> {
 }
 
 fn looks_like_invoice(text: &str) -> bool {
-    let has_ele = text.contains("电子发票") || text.contains("增值税");
-    let has_type = text.contains("普通发票") || text.contains("专用发票");
-    has_ele && has_type
+    let re_no = Regex::new(r"发票(号码|代码)").unwrap();
+    if re_no.is_match(text) { return true; }
+    // 兜底: 有20位以上数字(电子发票号/火车票号)即判为发票
+    Regex::new(r"\b\d{20,}\b").unwrap().is_match(text)
 }
 
 static RE_INVOICE_TYPE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"电子发票[（(](普通发票|专用发票)[)）]").unwrap()
+    Regex::new(r"电子发票[（(](普通发票|专用发票|铁路电子客票)[)）]").unwrap()
 });
 fn detect_invoice_type(text: &str) -> String {
+    if text.contains("铁路电子客票") {
+        return "铁路电子客票".to_string();
+    }
     if let Some(c) = RE_INVOICE_TYPE.captures(text) {
         return match &c[1] {
             "普通发票" => "普通发票".to_string(),
@@ -191,6 +198,16 @@ fn extract_issue_date(text: &str) -> String {
         let m: u32 = c[2].parse().unwrap_or(0);
         let d: u32 = c[3].parse().unwrap_or(0);
         if m >= 1 && m <= 12 && d >= 1 && d <= 31 {
+            return format!("{}年{:02}月{:02}日", y, m, d);
+        }
+    }
+    // 回退: YYYYMMDD (CJK 解码失败时)
+    let re_ascii = Regex::new(r"\b(\d{4})(\d{2})(\d{2})\b").unwrap();
+    for c in re_ascii.captures_iter(text) {
+        let y: u32 = c[1].parse().unwrap_or(0);
+        let m: u32 = c[2].parse().unwrap_or(0);
+        let d: u32 = c[3].parse().unwrap_or(0);
+        if y >= 2020 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31 {
             return format!("{}年{:02}月{:02}日", y, m, d);
         }
     }
@@ -228,29 +245,66 @@ fn extract_amount(text: &str) -> String {
 }
 
 static RE_BUYER_NAME: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"购买方信息[\s\S]*?名\s*称[：:]\s*([^\n\r]+)").unwrap()
+    Regex::new(r"购\s*名称[：:]\s*([^\n\r]+?)\s{2,}").unwrap()
 });
 fn extract_buyer(text: &str) -> String {
     if let Some(c) = RE_BUYER_NAME.captures(text) {
-        return c[1].trim().to_string();
-    }
-    // 回退: 购买方信息 ... 名称: XXX
-    let re = Regex::new(r"购\s*[\s\S]{0,8}?名\s*称[：:]\s*([^\n\r]+)").unwrap();
-    if let Some(c) = re.captures(text) {
         return c[1].trim().to_string();
     }
     String::new()
 }
 
 static RE_PROJECT: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"项目名称[\s\S]{0,40}?(\S+)").unwrap()
+    Regex::new(r"(?m)^\s*(\*[^*\n]+\*[^\s\n]+)").unwrap()
 });
 fn extract_project_name(text: &str) -> String {
     if let Some(c) = RE_PROJECT.captures(text) {
-        let v = c[1].trim();
-        if !v.is_empty() {
-            return v.to_string();
+        return c[1].trim().to_string();
+    }
+    String::new()
+}
+
+// ---------- 火车票专用 ----------
+
+fn train_extract_date(text: &str) -> String {
+    // 火车票有两处日期: 开票日期(抬头) 和 乘车日期。优先"开票日期"
+    if let Some(c) = RE_DATE.captures(text) {
+        let y = &c[1];
+        let m: u32 = c[2].parse().unwrap_or(0);
+        let d: u32 = c[3].parse().unwrap_or(0);
+        if m >= 1 && m <= 12 && d >= 1 && d <= 31 {
+            return format!("{}年{:02}月{:02}日", y, m, d);
+        }
+    }
+    // 回退 YYYYMMDD
+    let re_ascii = Regex::new(r"\b(\d{4})(\d{2})(\d{2})\b").unwrap();
+    for c in re_ascii.captures_iter(text) {
+        let y: u32 = c[1].parse().unwrap_or(0);
+        let m: u32 = c[2].parse().unwrap_or(0);
+        let d: u32 = c[3].parse().unwrap_or(0);
+        if y >= 2020 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31 {
+            return format!("{}年{:02}月{:02}日", y, m, d);
         }
     }
     String::new()
+}
+
+fn train_extract_amount(text: &str) -> String {
+    // 火车票金额在"票价"字段
+    let re = Regex::new(r"票价[：:]\s*¥?\s*([0-9]+(?:\.[0-9]{2})?)").unwrap();
+    if let Some(c) = re.captures(text) {
+        return c[1].to_string();
+    }
+    // 回退: 找含¥的数字
+    extract_amount(text)
+}
+
+fn train_extract_buyer(text: &str) -> String {
+    // 火车票: 购买方名称
+    let re = Regex::new(r"购买方名称[：:]\s*([^\n\r]+)").unwrap();
+    if let Some(c) = re.captures(text) {
+        return c[1].trim().to_string();
+    }
+    // 回退通用
+    extract_buyer(text)
 }

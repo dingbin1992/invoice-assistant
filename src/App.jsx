@@ -35,9 +35,6 @@ export function App() {
         setWorkDir(r.workDir);
         setOutputDir(r.outputDir);
         setConfigDir(r.configDir);
-        addLog(`配置目录: ${r.configDir}`, 'info');
-        addLog(`工作目录: ${r.workDir}`, 'info');
-        addLog(`输出目录: ${r.outputDir}`, 'info');
       } catch (e) {
         addLog(`初始化失败: ${e}`, 'error');
       }
@@ -76,15 +73,19 @@ export function App() {
     try {
       const files = await invoke('list_pdfs', { path: workDir });
       if (!files.length) { showToast('工作目录内无 PDF 文件', 'error'); addLog('工作目录内未发现 PDF', 'warn'); return; }
-      addLog(`开始导入,共 ${files.length} 个 PDF`, 'info');
+      addLog(`开始导入，共 ${files.length} 个 PDF`, 'info');
       const rows = await invoke('import_invoices', { paths: files });
       setInvoices(rows);
       const ok = rows.filter(r => r.is_invoice_pdf).length;
       const skip = rows.length - ok;
-      addLog(`导入完成: 识别 ${ok} 张发票,跳过 ${skip} 个非发票文件`, 'success');
+      // 逐文件日志
+      for (const r of rows) {
+        if (r.error) addLog(`${r.file_name}: ${r.error}`, 'warn');
+      }
+      addLog(`导入完成: 识别 ${ok} 张发票, 跳过 ${skip} 个非发票文件`, 'success');
       showToast(`导入完成(识别 ${ok}/跳过 ${skip})`, 'success');
     } catch (e) {
-      showToast(`导入失败: ${e}`, 'error');
+      showToast('导入失败', 'error');
       addLog(`导入失败: ${e}`, 'error');
     }
   };
@@ -130,11 +131,12 @@ export function App() {
   };
 
   const bulkSetCategory = () => {
-    if (!bulkCategory) { showToast('请先选择报销类别', 'error'); return; }
     const targets = invoices.filter(r => r._selected);
     if (!targets.length) { showToast('请先勾选要设置的发票(序号前复选框)', 'error'); return; }
-    setInvoices(prev => prev.map(r => r._selected ? { ...r, category: bulkCategory } : r));
-    addLog(`已对 ${targets.length} 张发票设置类别: ${bulkCategory}`, 'success');
+    const realCat = bulkCategory === '__CLEAR__' ? '' : bulkCategory;
+    setInvoices(prev => prev.map(r => r._selected ? { ...r, category: realCat } : r));
+    const label = realCat || '空';
+    addLog(`已对 ${targets.length} 张发票设置类别: ${label}`, 'success');
     showToast(`已设置 ${targets.length} 张`, 'success');
   };
 
@@ -249,6 +251,7 @@ export function App() {
           <button class="btn-action" onClick={applyFilter}>筛选项目名称</button>
           <select value={bulkCategory} onChange={e => setBulkCategory(e.currentTarget.value)}>
             <option value="">报销类别(下拉选择)</option>
+            <option value="__CLEAR__">（清空）</option>
             {categoryList.map(c => <option value={c}>{c}</option>)}
           </select>
           <button class="btn-action" onClick={bulkSetCategory}>一键设置类别</button>
@@ -318,8 +321,8 @@ export function App() {
           <div class="flex-spacer" />
           <button class="btn-action danger" onClick={clearLog}>清空</button>
         </div>
-        <div class="app-log-area">
-          {log.length === 0 && <div class="log-line info">等待操作…</div>}
+        <div class="log-wrap">
+          {log.length === 0 && <div class="log-line info">等待操作...</div>}
           {log.map((l, i) => (
             <div key={i} class={`log-line ${l.level}`}>[{l.time}] {l.msg}</div>
           ))}

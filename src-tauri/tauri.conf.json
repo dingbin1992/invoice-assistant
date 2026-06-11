@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "发票助手",
   "version": "1.0.0",
-  "identifier": "com.mrmonarch.invoice-assistant",
+  "identifier": "com.monarch.invoice-assistant",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -30,34 +30,74 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi"],
     "category": "Productivity",
     "shortDescription": "PDF 发票批量处理工具",
     "longDescription": "发票助手 - 扫描工作目录中的电子发票 PDF，识别字段、按报销类别筛选、批量输出费用台账、报销封面与汇总 PDF。",
     "icon": [
       "icons/icon.ico"
     ],
-    "resources": {
-      "../static/poppler/Library/bin/pdftotext.exe": "poppler/pdftotext.exe",
-      "../static/poppler/Library/bin/poppler.dll": "poppler/poppler.dll",
-      "../static/poppler/Library/bin/poppler-cpp.dll": "poppler/poppler-cpp.dll",
-      "../static/poppler/Library/bin/libcrypto-3-x64.dll": "poppler/libcrypto-3-x64.dll"
-    },
+    "resources": [
+      "poppler/Library/bin/pdftotext.exe",
+      "poppler/Library/bin/cairo.dll",
+      "poppler/Library/bin/charset.dll",
+      "poppler/Library/bin/deflate.dll",
+      "poppler/Library/bin/expat.dll",
+      "poppler/Library/bin/fontconfig-1.dll",
+      "poppler/Library/bin/freetype.dll",
+      "poppler/Library/bin/iconv.dll",
+      "poppler/Library/bin/jpeg8.dll",
+      "poppler/Library/bin/lcms2.dll",
+      "poppler/Library/bin/Lerc.dll",
+      "poppler/Library/bin/libcrypto-3-x64.dll",
+      "poppler/Library/bin/libcurl.dll",
+      "poppler/Library/bin/libexpat.dll",
+      "poppler/Library/bin/liblzma.dll",
+      "poppler/Library/bin/libpng16.dll",
+      "poppler/Library/bin/libssh2.dll",
+      "poppler/Library/bin/libtiff.dll",
+      "poppler/Library/bin/libzstd.dll",
+      "poppler/Library/bin/openjp2.dll",
+      "poppler/Library/bin/pixman-1-0.dll",
+      "poppler/Library/bin/poppler-cpp.dll",
+      "poppler/Library/bin/poppler-glib.dll",
+      "poppler/Library/bin/poppler.dll",
+      "poppler/Library/bin/tiff.dll",
+      "poppler/Library/bin/zlib.dll",
+      "poppler/Library/bin/zstd.dll",
+      "poppler/share/**/*"
+    ],
+    "targets": [
+      "nsis",
+      "dmg",
+      "deb",
+      "rpm",
+      "appimage",
+      "app"
+    ],
     "windows": {
-      "wix": {
-        "language": "zh-CN"
-      }
-    },
-    "linux": {
-      "deb": {
-        "depends": []
-      },
-      "rpm": {
-        "depends": []
+      "nsis": {
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico",
+        "languages": [
+          "SimpChinese"
+        ]
       }
     },
     "macOS": {
-      "minimumSystemVersion": "10.13"
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-2",
+          "libssl3",
+          "libsoup-3.0-0",
+          "libjavascriptcoregtk-4.1-0"
+        ]
+      }
     }
   }
 }
