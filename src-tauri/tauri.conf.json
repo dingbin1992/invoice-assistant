@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "发票助手",
+  "productName": "invoice-assistant",
   "version": "1.0.0",
   "identifier": "com.monarch.invoice-assistant",
   "build": {

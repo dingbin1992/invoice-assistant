@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
-use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::config_store::{category_path, ensure_initial_config, get_config_dir, mapping_path};

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'preact/hooks';
 import { invoke } from './bridge.js';
+import { open as dialogOpen, save as dialogSave } from '@tauri-apps/plugin-dialog';
 import { ConfigView } from './ConfigView.jsx';
 
 const FILTER_ALL = 'all';
@@ -18,14 +19,15 @@ export function App() {
   const [log, setLog] = useState([]);
   const [toast, setToast] = useState(null);
   const [showConfig, setShowConfig] = useState(false);
+  const [showInfoDetail, setShowInfoDetail] = useState(false);
 
   const showToast = (msg, type = 'info') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 2200);
   };
-  const addLog = (msg, level = 'info') => {
+  const addLog = (msg, level = 'info', detail = false) => {
     const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
-    setLog(prev => [...prev, { time, msg, level }]);
+    setLog(prev => [...prev, { time, msg, level, detail }]);
   };
 
   useEffect(() => {
@@ -92,7 +94,7 @@ export function App() {
           debug: r.debug_text || null,
           error: r.error || null,
         });
-        addLog(json, r.error ? 'warn' : 'info');
+        addLog(json, r.error ? 'warn' : 'info', true);
       }
       addLog(`导入完成: 识别 ${ok} 张发票, 跳过 ${skip} 个非发票文件`, 'success');
       showToast(`导入完成(识别 ${ok}/跳过 ${skip})`, 'success');
@@ -172,11 +174,7 @@ export function App() {
 
   const importMapping = async () => {
     try {
-      const p = await invoke('pick_directory');
-      // 实际用 file dialog pick_file, 这里改用 ask
-    } catch (e) {}
-    try {
-      const src = await window.__TAURI__.dialog.open({
+      const src = await dialogOpen({
         title: '选择要导入的 mapping.json',
         filters: [{ name: 'JSON', extensions: ['json'] }],
         multiple: false,
@@ -188,13 +186,13 @@ export function App() {
       addLog(`导入报销类别成功: ${path}`, 'success');
     } catch (e) {
       showToast('导入失败', 'error');
-      addLog(`导入报销类别失败`, 'error');
+      addLog(`导入报销类别失败: ${e}`, 'error');
     }
   };
 
   const exportMapping = async () => {
     try {
-      const dest = await window.__TAURI__.dialog.save({
+      const dest = await dialogSave({
         title: '导出 mapping.json',
         defaultPath: 'mapping.json',
         filters: [{ name: 'JSON', extensions: ['json'] }],
@@ -331,11 +329,14 @@ export function App() {
         <div class="btn-row">
           <div style="font-weight:700;color:var(--primary-dark);">处理日志</div>
           <div class="flex-spacer" />
+          <button class={'btn-action' + (showInfoDetail ? ' success' : '')} onClick={() => setShowInfoDetail(!showInfoDetail)}>
+            Info {showInfoDetail ? 'ON' : 'OFF'}
+          </button>
           <button class="btn-action danger" onClick={clearLog}>清空</button>
         </div>
         <div class="log-wrap">
           {log.length === 0 && <div class="log-line info">等待操作...</div>}
-          {log.map((l, i) => (
+          {log.filter(l => showInfoDetail || !l.detail).map((l, i) => (
             <div key={i} class={`log-line ${l.level}`}>[{l.time}] {l.msg}</div>
           ))}
         </div>
