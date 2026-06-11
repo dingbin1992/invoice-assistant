@@ -36,11 +36,8 @@ src-tauri/gen/
 # OS
 .DS_Store
 Thumbs.db
-*.dll
-*.exe
 *.pdb
 
 # Project-specific
 releases/
 需求说明/
-src-tauri/poppler/
