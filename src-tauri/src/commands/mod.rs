@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use tauri::AppHandle;
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::config_store::{category_path, ensure_initial_config, get_config_dir, mapping_path};
@@ -165,7 +166,25 @@ pub fn read_category(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn import_invoices(paths: Vec<String>) -> Vec<ParsedInvoice> {
+pub fn import_invoices(_app: AppHandle, paths: Vec<String>) -> Vec<ParsedInvoice> {
+    // 从安装目录向上递归搜索 pdftotext
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        'outer: for _ in 0..5 {
+            for sub in &["poppler/Library/bin/pdftotext.exe", "resources/poppler/Library/bin/pdftotext.exe"] {
+                let cand = dir.join(sub);
+                if cand.exists() {
+                    parser::set_pdftotext_path(cand);
+                    break 'outer;
+                }
+            }
+            if let Some(parent) = dir.parent() {
+                dir = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
     parser::import_invoices(paths)
 }
 

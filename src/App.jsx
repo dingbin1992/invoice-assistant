@@ -78,9 +78,21 @@ export function App() {
       setInvoices(rows);
       const ok = rows.filter(r => r.is_invoice_pdf).length;
       const skip = rows.length - ok;
-      // 逐文件日志
+      // 逐文件日志: JSON 格式展示解析数据
       for (const r of rows) {
-        if (r.error) addLog(`${r.file_name}: ${r.error}`, 'warn');
+        const json = JSON.stringify({
+          file: r.file_name,
+          is_invoice: r.is_invoice_pdf,
+          type: r.invoice_type,
+          date: r.issue_date,
+          no: r.invoice_no,
+          amount: r.amount,
+          buyer: r.buyer,
+          project: r.project_name,
+          debug: r.debug_text || null,
+          error: r.error || null,
+        });
+        addLog(json, r.error ? 'warn' : 'info');
       }
       addLog(`导入完成: 识别 ${ok} 张发票, 跳过 ${skip} 个非发票文件`, 'success');
       showToast(`导入完成(识别 ${ok}/跳过 ${skip})`, 'success');
@@ -105,7 +117,7 @@ export function App() {
   }, [invoices]);
 
   const filtered = useMemo(() => {
-    let rows = invoices;
+    let rows = invoices.filter(r => r.is_invoice_pdf);
     if (filterMode === FILTER_OK) rows = rows.filter(r => r.category && r.category.trim());
     else if (filterMode === FILTER_NONE) rows = rows.filter(r => !r.category || !r.category.trim());
     if (projectFilter) rows = rows.filter(r => r.project_name === projectFilter);
