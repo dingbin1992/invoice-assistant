@@ -54,20 +54,13 @@ fn parse_one(path: &str) -> ParsedInvoice {
         error: None,
         debug_text: String::new(),
     };
-    let (text, _pdftotext_err) = extract_text(path);
-    // 如果 buyer 为空，尝试从文件名提取
-    let mut diag = String::new();
-    if inv.buyer.is_empty() {
-        let name = extract_buyer_from_filename(&inv.file_name);
-        if !name.is_empty() {
-            inv.buyer = name.clone();
-        }
-        diag = format!("[FNAME:{}→{} BUYER_VAL={}]", inv.file_name, name, inv.buyer);
-    }
-    // 调试: 把 pdftotext 原始文本前500字符放进 error (不去空白)，加上字节长度
-    inv.error = Some(format!("[LEN={}]{} {}", text.len(), diag, text.chars().take(500).collect::<String>()));
-    // 调试: 保存原始文本前200字符(去空白)
+    let (text, pdftotext_err) = extract_text(path);
+    // 保存调试信息
     inv.debug_text = text.chars().filter(|c| !c.is_whitespace()).take(200).collect();
+    if let Some(ref e) = pdftotext_err {
+        inv.error = Some(e.clone());
+        return inv;
+    }
     if !looks_like_invoice(&text) {
         let snippet: String = text.chars().filter(|c| !c.is_whitespace()).take(40).collect();
         inv.error = Some(format!("非发票(特征不足),已跳过 [{}]", snippet));
@@ -88,6 +81,10 @@ fn parse_one(path: &str) -> ParsedInvoice {
         inv.amount = extract_amount(&text);
         inv.buyer = extract_buyer(&text);
         inv.project_name = extract_project_name(&text);
+    }
+    // 如果 buyer 为空，尝试从文件名提取
+    if inv.buyer.is_empty() {
+        inv.buyer = extract_buyer_from_filename(&inv.file_name);
     }
     inv
 }
@@ -113,6 +110,11 @@ fn run_pdftotext(pdf_path: &str) -> Result<String, String> {
        .arg("-")
        .current_dir(exe_dir)
        .env("POPPLER_DATADIR", "../../share/poppler");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     let output = cmd.output()
         .map_err(|e| format!("pdftotext 启动失败: {}", e))?;
     if !output.status.success() {
@@ -277,6 +279,9 @@ static RE_BUYER_NAME3: Lazy<Regex> = Lazy::new(|| {
     // 购买方名称 (火车票及部分普通发票格式)
     Regex::new(r"购买方名称[：:]\s*([^\n\r]+)").unwrap()
 });
+static RE_BUYER_NAKED: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"名称[：:]\s*(.+?)\s+名称[：:]").unwrap()
+});
 fn extract_buyer(text: &str) -> String {
     // 1. 购 名称
     if let Some(c) = RE_BUYER_NAME.captures(text) {
@@ -303,6 +308,10 @@ fn extract_buyer(text: &str) -> String {
         if !val.is_empty() && !val.starts_with("售") {
             return val;
         }
+    }
+    // 5. 裸露名称 (无购/买前缀, 第一个名称=买方, 第二个名称=卖方)
+    if let Some(c) = RE_BUYER_NAKED.captures(text) {
+        return c[1].trim().to_string();
     }
     String::new()
 }

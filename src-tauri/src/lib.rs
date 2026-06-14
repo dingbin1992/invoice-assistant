@@ -24,6 +24,7 @@ pub fn run() {
             export_mapping,
             read_category,
             merge_pdfs,
+            debug_pdf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

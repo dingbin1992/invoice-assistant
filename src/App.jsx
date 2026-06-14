@@ -14,12 +14,15 @@ export function App() {
   const [invoices, setInvoices] = useState([]);
   const [filterMode, setFilterMode] = useState(FILTER_ALL);
   const [projectFilter, setProjectFilter] = useState('');
+  const [invoiceNoFilter, setInvoiceNoFilter] = useState('');
+  const [buyerFilter, setBuyerFilter] = useState('');
   const [bulkCategory, setBulkCategory] = useState('');
   const [categoryList, setCategoryList] = useState([]);
   const [log, setLog] = useState([]);
   const [toast, setToast] = useState(null);
   const [showConfig, setShowConfig] = useState(false);
   const [showInfoDetail, setShowInfoDetail] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
 
   const showToast = (msg, type = 'info') => {
     setToast({ msg, type });
@@ -77,27 +80,47 @@ export function App() {
       if (!files.length) { showToast('工作目录内无 PDF 文件', 'error'); addLog('工作目录内未发现 PDF', 'warn'); return; }
       addLog(`开始导入，共 ${files.length} 个 PDF`, 'info');
       const rows = await invoke('import_invoices', { paths: files });
-      setInvoices(rows);
-      const ok = rows.filter(r => r.is_invoice_pdf).length;
-      const skip = rows.length - ok;
-      // 逐文件日志: JSON 格式展示解析数据
+      // 去重: 检查发票号唯一性
+      const existingInvoiceNos = new Set(invoices.filter(r => r.invoice_no).map(r => r.invoice_no));
+      const skippedDuplicates = [];
+      const newRows = [];
       for (const r of rows) {
-        const json = JSON.stringify({
-          file: r.file_name,
-          is_invoice: r.is_invoice_pdf,
-          type: r.invoice_type,
-          date: r.issue_date,
-          no: r.invoice_no,
-          amount: r.amount,
-          buyer: r.buyer,
-          project: r.project_name,
-          debug: r.debug_text || null,
-          error: r.error || null,
-        });
-        addLog(json, r.error ? 'warn' : 'info', true);
+        if (r.is_invoice_pdf && r.invoice_no && existingInvoiceNos.has(r.invoice_no)) {
+          skippedDuplicates.push({ file: r.file_name, invoice_no: r.invoice_no });
+          continue;
+        }
+        if (r.is_invoice_pdf && r.invoice_no) {
+          existingInvoiceNos.add(r.invoice_no);
+        }
+        newRows.push(r);
       }
-      addLog(`导入完成: 识别 ${ok} 张发票, 跳过 ${skip} 个非发票文件`, 'success');
-      showToast(`导入完成(识别 ${ok}/跳过 ${skip})`, 'success');
+      setInvoices(prev => [...prev, ...newRows]);
+      const ok = newRows.filter(r => r.is_invoice_pdf).length;
+      const skip = rows.length - ok - skippedDuplicates.length;
+      // 逐文件日志
+      for (const r of newRows) {
+        if (r.error && !r.is_invoice_pdf) {
+          addLog(`${r.file_name}: ${r.error}`, 'warn');
+        } else {
+          const json = JSON.stringify({
+            file: r.file_name,
+            type: r.invoice_type,
+            date: r.issue_date,
+            no: r.invoice_no,
+            amount: r.amount,
+            buyer: r.buyer,
+            project: r.project_name,
+          });
+          addLog(json, 'info', true);
+        }
+      }
+      // 重复发票提示
+      if (skippedDuplicates.length > 0) {
+        const dupFiles = skippedDuplicates.map(d => d.file).join(', ');
+        addLog(`跳过重复发票: ${dupFiles}`, 'warn');
+      }
+      addLog(`导入完成: 新增 ${ok} 张发票, 跳过 ${skip} 个非发票, ${skippedDuplicates.length} 个重复`, 'success');
+      showToast(`导入完成(新增${ok}/跳过非发票${skip}/重复${skippedDuplicates.length})`, 'success');
     } catch (e) {
       showToast('导入失败', 'error');
       addLog(`导入失败: ${e}`, 'error');
@@ -109,6 +132,8 @@ export function App() {
     setInvoices([]);
     setFilterMode(FILTER_ALL);
     setProjectFilter('');
+    setInvoiceNoFilter('');
+    setBuyerFilter('');
     addLog('已清空导入结果', 'info');
   };
 
@@ -118,26 +143,28 @@ export function App() {
     return Array.from(s).sort();
   }, [invoices]);
 
+  const buyerOptions = useMemo(() => {
+    const s = new Set();
+    for (const r of invoices) if (r.buyer && r.is_invoice_pdf) s.add(r.buyer);
+    return Array.from(s).sort();
+  }, [invoices]);
+
   const filtered = useMemo(() => {
     let rows = invoices.filter(r => r.is_invoice_pdf);
     if (filterMode === FILTER_OK) rows = rows.filter(r => r.category && r.category.trim());
     else if (filterMode === FILTER_NONE) rows = rows.filter(r => !r.category || !r.category.trim());
     if (projectFilter) rows = rows.filter(r => r.project_name === projectFilter);
+    if (invoiceNoFilter.trim()) rows = rows.filter(r => r.invoice_no && r.invoice_no.includes(invoiceNoFilter.trim()));
+    if (buyerFilter.trim()) rows = rows.filter(r => r.buyer && r.buyer.includes(buyerFilter.trim()));
     return rows.map((r, i) => ({ ...r, _idx: i + 1 }));
-  }, [invoices, filterMode, projectFilter]);
-
-  const applyFilter = () => {
-    if (filterMode === FILTER_OK) addLog('筛选: 可报销', 'info');
-    else if (filterMode === FILTER_NONE) addLog('筛选: 不可报销', 'info');
-    else addLog('筛选: 全部', 'info');
-    if (projectFilter) addLog(`项目名称: ${projectFilter}`, 'info');
-  };
+  }, [invoices, filterMode, projectFilter, invoiceNoFilter, buyerFilter]);
 
   const toggleSelect = (file) => {
     setInvoices(prev => prev.map(r => r.file === file ? { ...r, _selected: !r._selected } : r));
   };
   const toggleSelectAll = (val) => {
-    setInvoices(prev => prev.map(r => ({ ...r, _selected: val })));
+    const filteredFiles = new Set(filtered.map(r => r.file));
+    setInvoices(prev => prev.map(r => filteredFiles.has(r.file) ? { ...r, _selected: val } : r));
   };
 
   const setCategoryOne = (file, cat) => {
@@ -145,10 +172,12 @@ export function App() {
   };
 
   const bulkSetCategory = () => {
-    const targets = invoices.filter(r => r._selected);
+    const filteredFiles = new Set(filtered.map(r => r.file));
+    const targets = invoices.filter(r => r._selected && filteredFiles.has(r.file));
     if (!targets.length) { showToast('请先勾选要设置的发票(序号前复选框)', 'error'); return; }
     const realCat = bulkCategory === '__CLEAR__' ? '' : bulkCategory;
-    setInvoices(prev => prev.map(r => r._selected ? { ...r, category: realCat } : r));
+    const targetFiles = new Set(targets.map(t => t.file));
+    setInvoices(prev => prev.map(r => targetFiles.has(r.file) ? { ...r, category: realCat } : r));
     const label = realCat || '空';
     addLog(`已对 ${targets.length} 张发票设置类别: ${label}`, 'success');
     showToast(`已设置 ${targets.length} 张`, 'success');
@@ -158,12 +187,17 @@ export function App() {
   const exportCover = () => showToast('报销封面输出功能待模板确认后启用', 'info');
 
   const mergePdfs = async () => {
-    const targets = invoices.filter(r => r.is_invoice_pdf);
-    if (!targets.length) { showToast('当前没有可合并的发票', 'error'); return; }
+    const selected = invoices.filter(r => r._selected && r.is_invoice_pdf);
+    if (!selected.length) { showToast('请先勾选要合并的发票', 'error'); return; }
     if (!outputDir) { showToast('请先选择输出目录', 'error'); return; }
     try {
-      addLog(`开始合并 PDF: ${targets.length} 张`, 'info');
-      const r = await invoke('merge_pdfs', { inputFiles: targets.map(t => t.file), outputDir, filePrefix: '汇总发票' });
+      addLog(`开始合并 PDF: ${selected.length} 张`, 'info');
+      // 先调试第一个PDF
+      if (selected.length > 0) {
+        const debugInfo = await invoke('debug_pdf', { path: selected[0].file });
+        addLog(`PDF调试信息:\n${debugInfo}`, 'info', true);
+      }
+      const r = await invoke('merge_pdfs', { inputFiles: selected.map(t => t.file), outputDir, filePrefix: '汇总发票' });
       addLog(`合并完成,共生成 ${r.total} 个汇总文件`, 'success');
       showToast(`合并完成: ${r.total} 个文件`, 'success');
     } catch (e) {
@@ -210,6 +244,29 @@ export function App() {
 
   const clearLog = () => { setLog([]); addLog('日志已清空', 'info'); };
 
+  const handleContextMenu = (e, fileName) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, fileName });
+  };
+
+  const copyFileName = async (fileName) => {
+    try {
+      await navigator.clipboard.writeText(fileName);
+      showToast('已复制文件名', 'success');
+    } catch (e) {
+      showToast('复制失败', 'error');
+    }
+    setContextMenu(null);
+  };
+
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    if (contextMenu) {
+      document.addEventListener('click', handleClick);
+      return () => document.removeEventListener('click', handleClick);
+    }
+  }, [contextMenu]);
+
   return (
     <div class="app-main">
       <div class="panel">
@@ -251,20 +308,32 @@ export function App() {
       <div class="panel" style="flex:1; min-height:280px; display:flex; flex-direction:column;">
         <div class="panel-title">导入结果</div>
         <div class="filter-row">
-          <button class={'btn-action' + (filterMode === FILTER_ALL ? ' success' : '')} onClick={() => setFilterMode(FILTER_ALL)}>全部</button>
-          <button class={'btn-action' + (filterMode === FILTER_OK ? ' success' : '')} onClick={() => setFilterMode(FILTER_OK)}>可报销</button>
-          <button class={'btn-action' + (filterMode === FILTER_NONE ? ' success' : '')} onClick={() => setFilterMode(FILTER_NONE)}>不可报销</button>
-          <select value={projectFilter} onChange={e => setProjectFilter(e.currentTarget.value)}>
-            <option value="">项目名称(全部)</option>
-            {projectOptions.map(p => <option value={p}>{p}</option>)}
-          </select>
-          <button class="btn-action" onClick={applyFilter}>筛选项目名称</button>
-          <select value={bulkCategory} onChange={e => setBulkCategory(e.currentTarget.value)}>
-            <option value="">报销类别(下拉选择)</option>
-            <option value="__CLEAR__">（清空）</option>
-            {categoryList.map(c => <option value={c}>{c}</option>)}
-          </select>
-          <button class="btn-action" onClick={bulkSetCategory}>一键设置类别</button>
+          <div class="filter-group">
+            <div class="filter-buttons">
+              <button class={'btn-action' + (filterMode === FILTER_ALL ? ' success' : '')} onClick={() => setFilterMode(FILTER_ALL)}>全部</button>
+              <button class={'btn-action' + (filterMode === FILTER_OK ? ' success' : '')} onClick={() => setFilterMode(FILTER_OK)}>可报销</button>
+              <button class={'btn-action' + (filterMode === FILTER_NONE ? ' success' : '')} onClick={() => setFilterMode(FILTER_NONE)}>不可报销</button>
+            </div>
+            <input type="text" value={invoiceNoFilter} onInput={e => setInvoiceNoFilter(e.currentTarget.value)} placeholder="发票号码" class="invoice-no-input" />
+          </div>
+          <div class="filter-group">
+            <select value={buyerFilter} onChange={e => setBuyerFilter(e.currentTarget.value)} class="buyer-select">
+              <option value="">购买方(全部)</option>
+              {buyerOptions.map(b => <option value={b}>{b}</option>)}
+            </select>
+          </div>
+          <div class="filter-group">
+            <select value={projectFilter} onChange={e => setProjectFilter(e.currentTarget.value)}>
+              <option value="">项目名称(全部)</option>
+              {projectOptions.map(p => <option value={p}>{p}</option>)}
+            </select>
+            <select value={bulkCategory} onChange={e => setBulkCategory(e.currentTarget.value)}>
+              <option value="">报销类别</option>
+              <option value="__CLEAR__">（清空）</option>
+              {categoryList.map(c => <option value={c}>{c}</option>)}
+            </select>
+            <button class="btn-action" onClick={bulkSetCategory}>一键设置类别</button>
+          </div>
         </div>
 
         <div class="table-wrap">
@@ -273,10 +342,11 @@ export function App() {
               <tr>
                 <th class="check-cell">
                   <input type="checkbox" class="checkbox"
-                    checked={invoices.length > 0 && invoices.every(r => r._selected)}
+                    checked={filtered.length > 0 && filtered.every(r => r._selected)}
                     onChange={e => toggleSelectAll(e.currentTarget.checked)} />
                 </th>
                 <th class="no-cell">序号</th>
+                <th class="text">文件名</th>
                 <th>发票类别</th>
                 <th>开票日期</th>
                 <th>发票号码</th>
@@ -298,6 +368,7 @@ export function App() {
                       onChange={() => toggleSelect(r.file)} />
                   </td>
                   <td class="no-cell">{r._idx}</td>
+                  <td class="text file-name" title={r.file_name} onContextMenu={e => handleContextMenu(e, r.file_name)}>{r.file_name}</td>
                   <td>{r.invoice_type || (r.is_invoice_pdf ? '-' : '非发票')}</td>
                   <td>{r.issue_date || '-'}</td>
                   <td>{r.invoice_no || '-'}</td>
@@ -350,6 +421,12 @@ export function App() {
       )}
 
       {toast && <div class={`toast ${toast.type}`}>{toast.msg}</div>}
+
+      {contextMenu && (
+        <div class="context-menu" style={`left:${contextMenu.x}px;top:${contextMenu.y}px`}>
+          <div class="context-menu-item" onClick={() => copyFileName(contextMenu.fileName)}>复制文件名</div>
+        </div>
+      )}
     </div>
   );
 }

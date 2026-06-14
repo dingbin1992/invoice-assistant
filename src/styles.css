@@ -131,20 +131,52 @@ body,
 }
 
 .filter-row {
-  display: grid;
-  grid-template-columns: repeat(3, auto) 1.4fr auto 1.4fr auto;
-  gap: 4px;
+  display: flex;
+  gap: 10px;
   align-items: center;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
+  width: 100%;
+}
+.filter-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.filter-buttons {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .filter-row .btn-action {
-  padding: 8px 16px;
+  padding: 6px 14px;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+.filter-row input {
+  padding: 6px 10px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: var(--card-bg-2);
+  color: var(--primary-dark);
+  font-family: var(--font);
+  font-size: var(--font-size-sm);
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+.filter-row input:focus {
+  border-color: var(--primary-dark);
+  box-shadow: 0 0 0 2px var(--glow-primary);
+}
+.invoice-no-input {
+  flex: 2;
 }
 .filter-row select {
-  width: 100%;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: 1px solid var(--primary);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--card-bg-2);
   color: var(--primary-dark);
   font-family: var(--font);
@@ -152,6 +184,13 @@ body,
   font-weight: 600;
   outline: none;
   cursor: pointer;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.filter-row select:focus {
+  border-color: var(--primary-dark);
+  box-shadow: 0 0 0 2px var(--glow-primary);
 }
 
 .invoice-table {
@@ -198,6 +237,14 @@ body,
 .invoice-table td.text,
 .invoice-table th.text {
   text-align: left;
+}
+.invoice-table td.file-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 .table-wrap {
@@ -267,6 +314,28 @@ body,
 }
 .toast.success {
   background: linear-gradient(135deg, var(--success), var(--cyan));
+}
+
+.context-menu {
+  position: fixed;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  z-index: 9999;
+  padding: 4px 0;
+  min-width: 120px;
+}
+.context-menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  transition: background 0.15s;
+}
+.context-menu-item:hover {
+  background: var(--primary);
+  color: #fff;
 }
 .toast.error {
   background: linear-gradient(135deg, var(--error), var(--accent));

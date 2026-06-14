@@ -195,3 +195,8 @@ pub fn merge_pdfs(
 ) -> Result<merger::MergeResult, String> {
     merger::merge_pdfs(input_files, output_dir, file_prefix)
 }
+
+#[tauri::command]
+pub fn debug_pdf(path: String) -> Result<String, String> {
+    merger::debug_pdf(&path)
+}
