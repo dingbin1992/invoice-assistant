@@ -1,7 +1,18 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 
-use lopdf::{Dictionary, Document, Object, ObjectId, Stream};
+use image::GenericImageView;
+use lopdf::{Document, Object};
+use printpdf::{PdfDocument, Image, Mm, ImageTransform};
 use serde::Serialize;
+
+/// 由 Tauri 命令层在导入前设置，确保运行时能找到 pdftocairo
+static PDFTOCAIRO_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_pdftocairo_path(path: PathBuf) {
+    let _ = PDFTOCAIRO_PATH.set(path);
+}
 
 pub fn debug_pdf(path: &str) -> Result<String, String> {
     let doc = Document::load(path).map_err(|e| format!("加载PDF失败: {}", e))?;
@@ -10,7 +21,7 @@ pub fn debug_pdf(path: &str) -> Result<String, String> {
 
     for (page_num, (&page_num_key, &page_id)) in pages.iter().enumerate() {
         info += &format!("\n=== 页面 {} (页码: {}, ID: {:?}) ===\n", page_num + 1, page_num_key, page_id);
-        
+
         match doc.get_page_contents(page_id) {
             content_ids if !content_ids.is_empty() => {
                 info += &format!("内容流ID: {:?}\n", content_ids);
@@ -26,7 +37,7 @@ pub fn debug_pdf(path: &str) -> Result<String, String> {
             }
             _ => info += "无内容流\n",
         }
-        
+
         match doc.get_page_content(page_id) {
             Ok(content) => {
                 info += &format!("解码后内容长度: {}\n", content.len());
@@ -52,10 +63,10 @@ pub fn merge_pdfs(
     if input_files.is_empty() {
         return Err("没有需要合并的PDF".into());
     }
-    
+
     // 确保输出目录存在
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
-    
+
     let mut out_files = Vec::new();
     let mut idx = 0usize;
     let len = input_files.len();
@@ -68,7 +79,8 @@ pub fn merge_pdfs(
             // 单文件：读取并保存到临时文件，然后重命名
             let tmp_path = std::path::Path::new(&output_dir)
                 .join(format!(".tmp_{}.pdf", out_files.len()));
-            let data = std::fs::read(&group[0]).map_err(|e| format!("读取源PDF失败 {}: {}", group[0], e))?;
+            let data = std::fs::read(&group[0])
+                .map_err(|e| format!("读取源PDF失败 {}: {}", group[0], e))?;
             std::fs::write(&tmp_path, &data).map_err(|e| format!("写入临时文件失败: {}", e))?;
             // 删除已存在的目标文件
             if out_path.exists() {
@@ -81,130 +93,109 @@ pub fn merge_pdfs(
         out_files.push(out_path.to_string_lossy().to_string());
         idx = end;
     }
-    Ok(MergeResult { total: out_files.len(), output_dir, files: out_files })
+    Ok(MergeResult {
+        total: out_files.len(),
+        output_dir,
+        files: out_files,
+    })
 }
 
+/// 用 pdftocairo 将 PDF 转换为 PNG，然后用 printpdf 合并到 A4
 fn merge_two_to_a4(top_pdf: &str, bottom_pdf: &str, out: &Path) -> Result<(), String> {
-    let mut out_doc = Document::with_version("1.5");
+    let a4_w_mm: f32 = 210.0;
+    let a4_h_mm: f32 = 297.0;
+    let half_h_mm: f32 = a4_h_mm / 2.0;
+    let margin_mm: f32 = 3.0;
 
-    let a4_w: f64 = 595.0;
-    let a4_h: f64 = 842.0;
-    let half_h: f64 = a4_h / 2.0;
+    // 将 PDF 转换为 PNG
+    let top_png = pdf_to_png(top_pdf)?;
+    let bottom_png = pdf_to_png(bottom_pdf)?;
 
-    let top_bytes = std::fs::read(top_pdf).map_err(|e| format!("读取PDF失败: {}", e))?;
-    let bottom_bytes = std::fs::read(bottom_pdf).map_err(|e| format!("读取PDF失败: {}", e))?;
+    // 读取图片获取尺寸
+    let top_img = image::open(&top_png).map_err(|e| format!("读取顶部图片失败: {}", e))?;
+    let bottom_img = image::open(&bottom_png).map_err(|e| format!("读取底部图片失败: {}", e))?;
 
-    let top_src = Document::load_mem(&top_bytes).map_err(|e| format!("解析PDF失败: {}", e))?;
-    let bottom_src = Document::load_mem(&bottom_bytes).map_err(|e| format!("解析PDF失败: {}", e))?;
+    let (top_w, top_h) = top_img.dimensions();
+    let (bottom_w, bottom_h) = bottom_img.dimensions();
 
-    let top_pages = top_src.get_pages();
-    let bottom_pages = bottom_src.get_pages();
+    // 计算图片在 A4 半页中的缩放比例（mm）
+    // 假设 300 DPI: 1 像素 = 25.4/300 mm
+    let px_to_mm: f32 = 25.4 / 300.0;
+    let top_w_mm = top_w as f32 * px_to_mm;
+    let top_h_mm = top_h as f32 * px_to_mm;
+    let bottom_w_mm = bottom_w as f32 * px_to_mm;
+    let bottom_h_mm = bottom_h as f32 * px_to_mm;
 
-    let top_page_id = *top_pages.values().next().ok_or("顶部PDF无页面")?;
-    let bottom_page_id = *bottom_pages.values().next().ok_or("底部PDF无页面")?;
+    // 缩放比例：适应半页高度和 A4 宽度
+    let top_scale = ((a4_w_mm - margin_mm * 2.0) / top_w_mm)
+        .min((half_h_mm - margin_mm * 2.0) / top_h_mm);
+    let bottom_scale = ((a4_w_mm - margin_mm * 2.0) / bottom_w_mm)
+        .min((half_h_mm - margin_mm * 2.0) / bottom_h_mm);
 
-    let top_bbox = page_bbox(&top_src, top_page_id).unwrap_or((595.0, 842.0));
-    let bottom_bbox = page_bbox(&bottom_src, bottom_page_id).unwrap_or((595.0, 842.0));
+    // 居中偏移（mm）
+    let top_draw_w = top_w_mm * top_scale;
+    let top_draw_h = top_h_mm * top_scale;
+    let top_x = (a4_w_mm - top_draw_w) / 2.0;
+    let top_y = half_h_mm + (half_h_mm - top_draw_h) / 2.0;
 
-    // 计算缩放比例，使发票适应A4半页
-    let margin = 6.0;
-    let top_scale = ((a4_w - margin * 2.0) / top_bbox.0).min((half_h - margin * 2.0) / top_bbox.1);
-    let bottom_scale = ((a4_w - margin * 2.0) / bottom_bbox.0).min((half_h - margin * 2.0) / bottom_bbox.1);
+    let bottom_draw_w = bottom_w_mm * bottom_scale;
+    let bottom_draw_h = bottom_h_mm * bottom_scale;
+    let bottom_x = (a4_w_mm - bottom_draw_w) / 2.0;
+    let bottom_y = (half_h_mm - bottom_draw_h) / 2.0;
 
-    // 计算居中偏移
-    let top_new_w = top_bbox.0 * top_scale;
-    let top_new_h = top_bbox.1 * top_scale;
-    let top_tx = (a4_w - top_new_w) / 2.0;
-    let top_ty = half_h + (half_h - top_new_h) / 2.0;
+    // 创建 PDF
+    let doc = PdfDocument::empty("发票汇总");
+    let (page1, layer1) = doc.add_page(Mm(a4_w_mm), Mm(a4_h_mm), "发票");
+    let current_layer = doc.get_page(page1).get_layer(layer1);
 
-    let bottom_new_w = bottom_bbox.0 * bottom_scale;
-    let bottom_new_h = bottom_bbox.1 * bottom_scale;
-    let bottom_tx = (a4_w - bottom_new_w) / 2.0;
-    let bottom_ty = (half_h - bottom_new_h) / 2.0;
-
-    // 将顶部PDF转换为Form XObject
-    let (top_form_id, top_resources_id) = page_to_form_xobject(&top_src, top_page_id, &mut out_doc)?;
-    let (bottom_form_id, bottom_resources_id) = page_to_form_xobject(&bottom_src, bottom_page_id, &mut out_doc)?;
-
-    // 创建页面内容流：先绘制顶部发票，再绘制底部发票
-    let content = format!(
-        "q {0:.4} 0 0 {1:.4} {2:.4} {3:.4} cm /Fm1 Do Q \
-         q {4:.4} 0 0 {5:.4} {6:.4} {7:.4} cm /Fm2 Do Q",
-        top_scale, top_scale, top_tx, top_ty,
-        bottom_scale, bottom_scale, bottom_tx, bottom_ty
+    // 嵌入顶部图片
+    let top_image = Image::from_dynamic_image(&top_img);
+    top_image.add_to_layer(
+        current_layer.clone(),
+        ImageTransform {
+            translate_x: Some(Mm(top_x)),
+            translate_y: Some(Mm(top_y)),
+            rotate: None,
+            scale_x: Some(top_scale),
+            scale_y: Some(top_scale),
+            dpi: Some(300.0),
+        },
     );
-    
-    let mut content_dict = Dictionary::new();
-    content_dict.set(b"Length", Object::Integer(content.len() as i64));
-    let content_stream = Stream::new(content_dict, content.as_bytes().to_vec());
-    let content_id = out_doc.add_object(content_stream);
 
-    // 创建资源字典 - 合并两个Form的资源
-    let mut xobjects = Dictionary::new();
-    xobjects.set(b"Fm1", Object::Reference(top_form_id));
-    xobjects.set(b"Fm2", Object::Reference(bottom_form_id));
-    
-    let mut resources = Dictionary::new();
-    resources.set(b"XObject", Object::Dictionary(xobjects));
-    
-    // 如果两个页面都有字体，需要合并
-    if let Some(top_font_ref) = top_resources_id {
-        if let Ok(Object::Dictionary(top_res)) = out_doc.get_object(top_font_ref) {
-            if let Ok(font_obj) = top_res.get(b"Font") {
-                resources.set(b"Font", font_obj.clone());
-            }
-        }
-    }
-    if let Some(bottom_font_ref) = bottom_resources_id {
-        if let Ok(Object::Dictionary(bottom_res)) = out_doc.get_object(bottom_font_ref) {
-            if let Ok(font_obj) = bottom_res.get(b"Font") {
-                // 如果已经有Font，需要合并
-                if resources.get(b"Font").is_err() {
-                    resources.set(b"Font", font_obj.clone());
-                }
-            }
-        }
-    }
-    
-    let resources_id = out_doc.add_object(resources);
+    // 嵌入底部图片
+    let bottom_image = Image::from_dynamic_image(&bottom_img);
+    bottom_image.add_to_layer(
+        current_layer,
+        ImageTransform {
+            translate_x: Some(Mm(bottom_x)),
+            translate_y: Some(Mm(bottom_y)),
+            rotate: None,
+            scale_x: Some(bottom_scale),
+            scale_y: Some(bottom_scale),
+            dpi: Some(300.0),
+        },
+    );
 
-    // 创建页面
-    let mut page_dict = Dictionary::new();
-    page_dict.set(b"Type", Object::Name(b"Page".to_vec()));
-    page_dict.set(b"MediaBox", Object::Array(vec![
-        Object::from(0.0_f64), Object::from(0.0_f64),
-        Object::from(a4_w), Object::from(a4_h),
-    ]));
-    page_dict.set(b"Contents", Object::Reference(content_id));
-    page_dict.set(b"Resources", Object::Reference(resources_id));
-    let page_id = out_doc.add_object(page_dict);
+    // 保存 PDF
+    let out_dir = out.parent().unwrap_or(Path::new("."));
+    let tmp_path = out_dir.join(format!(
+        ".tmp_merge_{}.pdf",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
+    let file = std::fs::File::create(&tmp_path)
+        .map_err(|e| format!("创建临时PDF失败: {}", e))?;
+    let mut writer = std::io::BufWriter::new(file);
+    doc.save(&mut writer)
+        .map_err(|e| format!("保存PDF失败: {}", e))?;
 
-    // 创建页面树
-    let mut pages_dict = Dictionary::new();
-    pages_dict.set(b"Type", Object::Name(b"Pages".to_vec()));
-    pages_dict.set(b"Kids", Object::Array(vec![Object::Reference(page_id)]));
-    pages_dict.set(b"Count", Object::Integer(1));
-    let pages_id = out_doc.add_object(pages_dict);
+    // 清理临时 PNG
+    std::fs::remove_file(&top_png).ok();
+    std::fs::remove_file(&bottom_png).ok();
 
-    if let Ok(page_obj) = out_doc.get_object_mut(page_id) {
-        if let Object::Dictionary(d) = page_obj {
-            d.set(b"Parent", Object::Reference(pages_id));
-        }
-    }
-
-    // 创建目录
-    let mut catalog = Dictionary::new();
-    catalog.set(b"Type", Object::Name(b"Catalog".to_vec()));
-    catalog.set(b"Pages", Object::Reference(pages_id));
-    let catalog_id = out_doc.add_object(catalog);
-
-    out_doc.trailer.set(b"Root", Object::Reference(catalog_id));
-
-    // 使用临时文件保存，然后重命名
-    let out_dir = out.parent().unwrap_or(std::path::Path::new("."));
-    let tmp_path = out_dir.join(format!(".tmp_merge_{}.pdf", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()));
-    out_doc.save(&tmp_path).map_err(|e| format!("保存临时PDF失败: {}", e))?;
-    // 删除已存在的目标文件
+    // 重命名到目标路径
     if out.exists() {
         std::fs::remove_file(out).ok();
     }
@@ -212,104 +203,87 @@ fn merge_two_to_a4(top_pdf: &str, bottom_pdf: &str, out: &Path) -> Result<(), St
     Ok(())
 }
 
-fn page_to_form_xobject(
-    src: &Document,
-    page_id: ObjectId,
-    out_doc: &mut Document,
-) -> Result<(ObjectId, Option<ObjectId>), String> {
-    // 获取页面内容
-    let content_data = src.get_page_content(page_id)
-        .map_err(|e| format!("获取页面内容失败: {}", e))?;
-    
-    if content_data.is_empty() {
-        return Err("PDF页面内容为空".into());
+/// 用 pdftocairo 将 PDF 第一页转换为 PNG，返回临时 PNG 路径
+fn pdf_to_png(pdf_path: &str) -> Result<String, String> {
+    let exe = locate_pdftocairo().ok_or("pdftocairo.exe 未找到")?;
+    let exe_dir = exe.parent().unwrap_or(Path::new("."));
+
+    // 临时输出路径（不带扩展名，pdftocairo 会自动加 .png）
+    let tmp_base = format!("{}.tmp_pdf2png_{}",
+        std::env::temp_dir().to_string_lossy(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+
+    let mut cmd = Command::new(&exe);
+    cmd.arg("-png")
+        .arg("-r").arg("300")
+        .arg("-singlefile")
+        .arg(pdf_path)
+        .arg(&tmp_base)
+        .current_dir(exe_dir)
+        .env("POPPLER_DATADIR", "../../share/poppler");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    // 获取页面尺寸
-    let bbox = page_bbox(src, page_id).unwrap_or((595.0, 842.0));
+    let output = cmd.output().map_err(|e| format!("pdftocairo 启动失败: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("pdftocairo 执行失败: {}", stderr.trim()));
+    }
 
-    // 获取页面资源
-    let mut res_dict = Dictionary::new();
-    let mut font_ref = None;
-    
-    if let Ok((Some(resources), _)) = src.get_page_resources(page_id) {
-        // 复制字体资源
-        if let Ok(font_obj) = resources.get(b"Font") {
-            match font_obj {
-                Object::Reference(r) => {
-                    let new_id = out_doc.add_object(src.get_object(*r).map_err(|e| e.to_string())?.clone());
-                    let mut new_font_dict = Dictionary::new();
-                    // 复制字体字典中的每个字体
-                    if let Ok(Object::Dictionary(font_dict)) = src.get_object(*r) {
-                        for (key, value) in font_dict.iter() {
-                            if let Object::Reference(fr) = value {
-                                if let Ok(font_obj) = src.get_object(*fr) {
-                                    let new_font_id = out_doc.add_object(font_obj.clone());
-                                    new_font_dict.set(key.clone(), Object::Reference(new_font_id));
-                                }
-                            }
-                        }
-                    }
-                    res_dict.set(b"Font".to_vec(), Object::Dictionary(new_font_dict));
-                    font_ref = Some(new_id);
-                }
-                Object::Dictionary(d) => {
-                    let mut new_font_dict = Dictionary::new();
-                    for (key, value) in d.iter() {
-                        if let Object::Reference(fr) = value {
-                            if let Ok(font_obj) = src.get_object(*fr) {
-                                let new_font_id = out_doc.add_object(font_obj.clone());
-                                new_font_dict.set(key.clone(), Object::Reference(new_font_id));
-                            }
-                        }
-                    }
-                    res_dict.set(b"Font".to_vec(), Object::Dictionary(new_font_dict));
-                }
-                _ => {}
+    let png_path = format!("{}.png", tmp_base);
+    if !Path::new(&png_path).exists() {
+        return Err("pdftocairo 未生成 PNG 文件".into());
+    }
+    Ok(png_path)
+}
+
+fn locate_pdftocairo() -> Option<PathBuf> {
+    // 0. 优先使用预设路径
+    if let Some(p) = PDFTOCAIRO_PATH.get() {
+        if p.exists() { return Some(p.clone()); }
+    }
+    // 1. 从 exe 所在目录向上递归搜索 poppler
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        for _ in 0..5 {
+            for sub in &["poppler/Library/bin/pdftocairo.exe", "resources/poppler/Library/bin/pdftocairo.exe"] {
+                let c = dir.join(sub);
+                if c.exists() { return Some(c); }
+            }
+            if let Some(parent) = dir.parent() {
+                dir = parent.to_path_buf();
+            } else {
+                break;
             }
         }
-        
-        // 复制其他资源（ExtGState等）
-        if let Ok(gs_obj) = resources.get(b"ExtGState") {
-            res_dict.set(b"ExtGState".to_vec(), gs_obj.clone());
+    }
+    // 2. 开发时 cwd 相对路径
+    if let Ok(cwd) = std::env::current_dir() {
+        for sub in &[
+            "src-tauri/poppler/Library/bin/pdftocairo.exe",
+            "static/poppler/Library/bin/pdftocairo.exe",
+        ] {
+            let c = cwd.join(sub);
+            if c.exists() { return Some(c); }
         }
     }
-
-    // 创建Form XObject
-    let mut form_dict = Dictionary::new();
-    form_dict.set(b"Type", Object::Name(b"XObject".to_vec()));
-    form_dict.set(b"Subtype", Object::Name(b"Form".to_vec()));
-    form_dict.set(b"FormType", Object::Integer(1));
-    form_dict.set(b"BBox", Object::Array(vec![
-        Object::from(0.0_f64), Object::from(0.0_f64),
-        Object::from(bbox.0), Object::from(bbox.1),
-    ]));
-    form_dict.set(b"Length", Object::Integer(content_data.len() as i64));
-    
-    if !res_dict.is_empty() {
-        form_dict.set(b"Resources", Object::Dictionary(res_dict));
-    }
-
-    let form_stream = Stream::new(form_dict, content_data);
-    let form_id = out_doc.add_object(form_stream);
-    
-    Ok((form_id, font_ref))
+    // 3. PATH 搜索
+    if let Ok(p) = which("pdftocairo", ".exe") { return Some(p); }
+    None
 }
 
-fn page_bbox(doc: &Document, page_id: ObjectId) -> Option<(f64, f64)> {
-    let page_dict = doc.get_dictionary(page_id).ok()?;
-    let mbox = page_dict.get(b"MediaBox").ok()?;
-    let arr = mbox.as_array().ok()?;
-    if arr.len() < 4 { return None; }
-    let w = obj_to_f64(&arr[2])? - obj_to_f64(&arr[0])?;
-    let h = obj_to_f64(&arr[3])? - obj_to_f64(&arr[1])?;
-    Some((w.abs(), h.abs()))
-}
-
-fn obj_to_f64(o: &Object) -> Option<f64> {
-    match o {
-        Object::Real(r) => Some(*r as f64),
-        Object::Integer(i) => Some(*i as f64),
-        _ => None,
+fn which(cmd: &str, ext: &str) -> Result<PathBuf, ()> {
+    let path = std::env::var_os("PATH").ok_or(())?;
+    for p in std::env::split_paths(&path) {
+        let cand = p.join(format!("{}{}", cmd, ext));
+        if cand.exists() { return Ok(cand); }
     }
+    Err(())
 }

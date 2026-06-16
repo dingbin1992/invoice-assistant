@@ -193,6 +193,24 @@ pub fn merge_pdfs(
     output_dir: String,
     file_prefix: String,
 ) -> Result<merger::MergeResult, String> {
+    // 从安装目录向上递归搜索 pdftocairo
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        'outer: for _ in 0..5 {
+            for sub in &["poppler/Library/bin/pdftocairo.exe", "resources/poppler/Library/bin/pdftocairo.exe"] {
+                let cand = dir.join(sub);
+                if cand.exists() {
+                    merger::set_pdftocairo_path(cand);
+                    break 'outer;
+                }
+            }
+            if let Some(parent) = dir.parent() {
+                dir = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+    }
     merger::merge_pdfs(input_files, output_dir, file_prefix)
 }
 
