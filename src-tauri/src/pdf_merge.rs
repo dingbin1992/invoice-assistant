@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use image::GenericImageView;
 use lopdf::{Document, Object};
-use printpdf::{PdfDocument, Image, Mm, ImageTransform};
+use printpdf::{PdfDocument, Image, Mm, ImageTransform, Rect, Color};
 use serde::Serialize;
 
 /// 由 Tauri 命令层在导入前设置，确保运行时能找到 pdftocairo
@@ -55,6 +55,7 @@ pub struct MergeResult {
     pub files: Vec<String>,
 }
 
+/// 将所有PDF合并为一个PDF文件，每页显示2个发票
 pub fn merge_pdfs(
     input_files: Vec<String>,
     output_dir: String,
@@ -67,117 +68,114 @@ pub fn merge_pdfs(
     // 确保输出目录存在
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
-    let mut out_files = Vec::new();
+    let a4_w_mm: f32 = 210.0;
+    let a4_h_mm: f32 = 297.0;
+    let half_h_mm: f32 = a4_h_mm / 2.0;
+    let margin_mm: f32 = 3.0;
+    let line_thickness: f32 = 0.5;
+
+    // 创建一个PDF文档
+    let doc = PdfDocument::empty("发票汇总");
+    let mut page_count = 0;
+
+    // 每两个发票为一组，每组占一页A4
     let mut idx = 0usize;
     let len = input_files.len();
     while idx < len {
         let end = (idx + 2).min(len);
         let group = &input_files[idx..end];
-        let out_path = std::path::Path::new(&output_dir)
-            .join(format!("{}_{:03}.pdf", file_prefix, out_files.len() + 1));
-        if group.len() == 1 {
-            // 单文件：读取并保存到临时文件，然后重命名
-            let tmp_path = std::path::Path::new(&output_dir)
-                .join(format!(".tmp_{}.pdf", out_files.len()));
-            let data = std::fs::read(&group[0])
-                .map_err(|e| format!("读取源PDF失败 {}: {}", group[0], e))?;
-            std::fs::write(&tmp_path, &data).map_err(|e| format!("写入临时文件失败: {}", e))?;
-            // 删除已存在的目标文件
-            if out_path.exists() {
-                std::fs::remove_file(&out_path).ok();
-            }
-            std::fs::rename(&tmp_path, &out_path).map_err(|e| format!("重命名文件失败: {}", e))?;
-        } else {
-            merge_two_to_a4(&group[0], &group[1], &out_path)?;
+
+        // 添加一页A4
+        let (page, layer) = doc.add_page(Mm(a4_w_mm), Mm(a4_h_mm), &format!("发票{}", page_count + 1));
+        let current_layer = doc.get_page(page).get_layer(layer);
+        page_count += 1;
+
+        // 处理第一个发票（上半部分）
+        let top_pdf = &group[0];
+        let top_png = pdf_to_png(top_pdf)?;
+        let top_img = image::open(&top_png).map_err(|e| format!("读取顶部图片失败: {}", e))?;
+        let (top_w, top_h) = top_img.dimensions();
+
+        let px_to_mm: f32 = 25.4 / 300.0;
+        let top_w_mm = top_w as f32 * px_to_mm;
+        let top_h_mm = top_h as f32 * px_to_mm;
+
+        let top_scale = ((a4_w_mm - margin_mm * 2.0) / top_w_mm)
+            .min((half_h_mm - margin_mm * 2.0) / top_h_mm);
+
+        let top_draw_w = top_w_mm * top_scale;
+        let top_draw_h = top_h_mm * top_scale;
+        let top_x = (a4_w_mm - top_draw_w) / 2.0;
+        let top_y = half_h_mm + (half_h_mm - top_draw_h) / 2.0;
+
+        let top_image = Image::from_dynamic_image(&top_img);
+        top_image.add_to_layer(
+            current_layer.clone(),
+            ImageTransform {
+                translate_x: Some(Mm(top_x)),
+                translate_y: Some(Mm(top_y)),
+                rotate: None,
+                scale_x: Some(top_scale),
+                scale_y: Some(top_scale),
+                dpi: Some(300.0),
+            },
+        );
+
+        // 清理临时PNG
+        std::fs::remove_file(&top_png).ok();
+
+        // 处理第二个发票（下半部分，如果有）
+        if group.len() > 1 {
+            let bottom_pdf = &group[1];
+            let bottom_png = pdf_to_png(bottom_pdf)?;
+            let bottom_img = image::open(&bottom_png).map_err(|e| format!("读取底部图片失败: {}", e))?;
+            let (bottom_w, bottom_h) = bottom_img.dimensions();
+
+            let bottom_w_mm = bottom_w as f32 * px_to_mm;
+            let bottom_h_mm = bottom_h as f32 * px_to_mm;
+
+            let bottom_scale = ((a4_w_mm - margin_mm * 2.0) / bottom_w_mm)
+                .min((half_h_mm - margin_mm * 2.0) / bottom_h_mm);
+
+            let bottom_draw_w = bottom_w_mm * bottom_scale;
+            let bottom_draw_h = bottom_h_mm * bottom_scale;
+            let bottom_x = (a4_w_mm - bottom_draw_w) / 2.0;
+            let bottom_y = (half_h_mm - bottom_draw_h) / 2.0;
+
+            let bottom_image = Image::from_dynamic_image(&bottom_img);
+            bottom_image.add_to_layer(
+                current_layer.clone(),
+                ImageTransform {
+                    translate_x: Some(Mm(bottom_x)),
+                    translate_y: Some(Mm(bottom_y)),
+                    rotate: None,
+                    scale_x: Some(bottom_scale),
+                    scale_y: Some(bottom_scale),
+                    dpi: Some(300.0),
+                },
+            );
+
+            // 清理临时PNG
+            std::fs::remove_file(&bottom_png).ok();
         }
-        out_files.push(out_path.to_string_lossy().to_string());
+
+        // 添加中间分隔线（用细矩形模拟）
+        current_layer.set_fill_color(Color::Rgb(printpdf::Rgb::new(0.0, 0.0, 0.0, None)));
+        let rect = Rect::new(
+            Mm(margin_mm),
+            Mm(half_h_mm - line_thickness / 2.0),
+            Mm(a4_w_mm - margin_mm),
+            Mm(half_h_mm + line_thickness / 2.0),
+        );
+        current_layer.add_rect(rect);
+
         idx = end;
     }
-    Ok(MergeResult {
-        total: out_files.len(),
-        output_dir,
-        files: out_files,
-    })
-}
 
-/// 用 pdftocairo 将 PDF 转换为 PNG，然后用 printpdf 合并到 A4
-fn merge_two_to_a4(top_pdf: &str, bottom_pdf: &str, out: &Path) -> Result<(), String> {
-    let a4_w_mm: f32 = 210.0;
-    let a4_h_mm: f32 = 297.0;
-    let half_h_mm: f32 = a4_h_mm / 2.0;
-    let margin_mm: f32 = 3.0;
-
-    // 将 PDF 转换为 PNG
-    let top_png = pdf_to_png(top_pdf)?;
-    let bottom_png = pdf_to_png(bottom_pdf)?;
-
-    // 读取图片获取尺寸
-    let top_img = image::open(&top_png).map_err(|e| format!("读取顶部图片失败: {}", e))?;
-    let bottom_img = image::open(&bottom_png).map_err(|e| format!("读取底部图片失败: {}", e))?;
-
-    let (top_w, top_h) = top_img.dimensions();
-    let (bottom_w, bottom_h) = bottom_img.dimensions();
-
-    // 计算图片在 A4 半页中的缩放比例（mm）
-    // 假设 300 DPI: 1 像素 = 25.4/300 mm
-    let px_to_mm: f32 = 25.4 / 300.0;
-    let top_w_mm = top_w as f32 * px_to_mm;
-    let top_h_mm = top_h as f32 * px_to_mm;
-    let bottom_w_mm = bottom_w as f32 * px_to_mm;
-    let bottom_h_mm = bottom_h as f32 * px_to_mm;
-
-    // 缩放比例：适应半页高度和 A4 宽度
-    let top_scale = ((a4_w_mm - margin_mm * 2.0) / top_w_mm)
-        .min((half_h_mm - margin_mm * 2.0) / top_h_mm);
-    let bottom_scale = ((a4_w_mm - margin_mm * 2.0) / bottom_w_mm)
-        .min((half_h_mm - margin_mm * 2.0) / bottom_h_mm);
-
-    // 居中偏移（mm）
-    let top_draw_w = top_w_mm * top_scale;
-    let top_draw_h = top_h_mm * top_scale;
-    let top_x = (a4_w_mm - top_draw_w) / 2.0;
-    let top_y = half_h_mm + (half_h_mm - top_draw_h) / 2.0;
-
-    let bottom_draw_w = bottom_w_mm * bottom_scale;
-    let bottom_draw_h = bottom_h_mm * bottom_scale;
-    let bottom_x = (a4_w_mm - bottom_draw_w) / 2.0;
-    let bottom_y = (half_h_mm - bottom_draw_h) / 2.0;
-
-    // 创建 PDF
-    let doc = PdfDocument::empty("发票汇总");
-    let (page1, layer1) = doc.add_page(Mm(a4_w_mm), Mm(a4_h_mm), "发票");
-    let current_layer = doc.get_page(page1).get_layer(layer1);
-
-    // 嵌入顶部图片
-    let top_image = Image::from_dynamic_image(&top_img);
-    top_image.add_to_layer(
-        current_layer.clone(),
-        ImageTransform {
-            translate_x: Some(Mm(top_x)),
-            translate_y: Some(Mm(top_y)),
-            rotate: None,
-            scale_x: Some(top_scale),
-            scale_y: Some(top_scale),
-            dpi: Some(300.0),
-        },
-    );
-
-    // 嵌入底部图片
-    let bottom_image = Image::from_dynamic_image(&bottom_img);
-    bottom_image.add_to_layer(
-        current_layer,
-        ImageTransform {
-            translate_x: Some(Mm(bottom_x)),
-            translate_y: Some(Mm(bottom_y)),
-            rotate: None,
-            scale_x: Some(bottom_scale),
-            scale_y: Some(bottom_scale),
-            dpi: Some(300.0),
-        },
-    );
-
-    // 保存 PDF
-    let out_dir = out.parent().unwrap_or(Path::new("."));
+    // 保存PDF
+    let out_path = std::path::Path::new(&output_dir)
+        .join(format!("{}.pdf", file_prefix));
+    let out_dir = out_path.parent().unwrap_or(Path::new("."));
     let tmp_path = out_dir.join(format!(
         ".tmp_merge_{}.pdf",
         std::time::SystemTime::now()
@@ -191,16 +189,20 @@ fn merge_two_to_a4(top_pdf: &str, bottom_pdf: &str, out: &Path) -> Result<(), St
     doc.save(&mut writer)
         .map_err(|e| format!("保存PDF失败: {}", e))?;
 
-    // 清理临时 PNG
-    std::fs::remove_file(&top_png).ok();
-    std::fs::remove_file(&bottom_png).ok();
-
     // 重命名到目标路径
-    if out.exists() {
-        std::fs::remove_file(out).ok();
+    if out_path.exists() {
+        std::fs::remove_file(&out_path).ok();
     }
-    std::fs::rename(&tmp_path, out).map_err(|e| format!("重命名PDF失败: {}", e))?;
-    Ok(())
+    std::fs::rename(&tmp_path, &out_path).map_err(|e| format!("重命名PDF失败: {}", e))?;
+
+    let mut out_files = Vec::new();
+    out_files.push(out_path.to_string_lossy().to_string());
+
+    Ok(MergeResult {
+        total: 1,
+        output_dir,
+        files: out_files,
+    })
 }
 
 /// 用 pdftocairo 将 PDF 第一页转换为 PNG，返回临时 PNG 路径
