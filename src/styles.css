@@ -437,6 +437,10 @@ body,
 .config-table td select:focus {
   border-color: var(--primary);
 }
+.config-table td .btn-action {
+  padding: 4px 12px;
+  font-size: 14px;
+}
 
 .kbd-row {
   display: flex;
