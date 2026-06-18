@@ -1,54 +1,86 @@
-# AGENTS.md — invoice-assistant
+# AGENTS.md - 发票助手开发指南
 
-Tauri v2 + Preact 桌面应用，用于批量扫描电子发票 PDF、识别字段、按报销类别筛选、合并输出汇总 PDF。
+## 项目概述
+Tauri 2.x 桌面应用，用于批量处理电子发票 PDF：解析字段、分类、合并输出。
 
-## 构建 & 开发命令
+## 技术栈
+- **前端**: Preact + Vite (端口 1420)
+- **后端**: Rust + Tauri 2.x
+- **PDF处理**: Poppler (pdftotext/pdftocairo)，打包在 `src-tauri/poppler/`
 
+## 开发命令
+
+### 前端开发
 ```bash
-# 前端开发（仅 Vite，端口 1420）
-npm run dev
-
-# Tauri 开发模式（自动启动前端 + Rust 后端）
-npm run tauri:dev
-
-# 生产构建（前端 + Rust，输出 NSIS 安装包到 src-tauri/target/release/bundle/）
-npm run tauri:build
+npm run dev          # 启动 Vite 开发服务器 (localhost:1420)
 ```
 
-构建需要 MSVC 工具链。`.cargo/config.toml` 和 `_build.bat` 里硬编码了本机 SDK 路径，换机器需修改。
+### Tauri 开发
+```bash
+npm run tauri:dev    # 启动 Tauri 桌面应用开发模式
+```
 
-## 关键目录 & 入口
+### 构建发布
+```bash
+npm run tauri:build  # 构建生产版本
+_build.bat           # Windows 构建脚本（设置 VS 编译环境）
+```
 
-| 路径 | 说明 |
-|---|---|
-| `src/` | 前端 Preact（JSX），两个入口 |
-| `src/main.jsx` | 主窗口入口 → `App.jsx` |
-| `src/config.jsx` | 配置窗口入口 → `ConfigApp.jsx` |
-| `index.html` / `config.html` | 两个 HTML 入口（Vite multi-page） |
-| `src/bridge.js` | `window.__TAURI_INTERNALS__.invoke` 的薄封装 |
-| `src-tauri/src/` | Rust 后端 |
-| `src-tauri/src/main.rs` | 程序入口，调用 `invoice_assistant_lib::run()` |
-| `src-tauri/src/lib.rs` | Tauri Builder，注册所有 command |
-| `src-tauri/src/commands/mod.rs` | 所有 `#[tauri::command]` 定义 |
-| `src-tauri/src/invoice_parser.rs` | PDF 发票解析（调用 pdftotext + 正则） |
-| `src-tauri/src/pdf_merge.rs` | PDF 合并（lopdf，两页合 A4 一页） |
-| `src-tauri/src/config_store.rs` | mapping.json / category.json 读写 |
-| `config/` | 打包进 `resources` 的默认 mapping.json 和 category.json |
-| `src-tauri/poppler/` | 内嵌 pdftotext.exe 及其依赖，打包为 bundle resources |
+## 项目结构
+```
+src/                  # Preact 前端代码
+  ├── main.jsx        # 入口
+  ├── App.jsx         # 主界面
+  ├── ConfigView.jsx  # 报销类别管理
+  └── bridge.js       # Tauri IPC 桥接
 
-## 架构要点
+src-tauri/src/        # Rust 后端
+  ├── lib.rs          # 插件注册和命令绑定
+  ├── commands/mod.rs # Tauri 命令实现
+  ├── invoice_parser.rs # PDF 发票解析
+  ├── pdf_merge.rs    # PDF 合并功能
+  └── config_store.rs # 配置文件管理
+```
 
-- **双窗口应用**：主窗口处理发票导入/筛选/合并；配置窗口（`config.html`）管理 mapping/category。capabilities 里 windows 为 `["main", "config"]`。
-- **PDF 解析依赖 Poppler**：`invoice_parser.rs` 通过 `Command` 调用 `pdftotext.exe` 提取文本，再用正则匹配字段。`pdftotext` 的查找顺序：Tauri command 预设路径 → `INVOICE_PDFTOTEXT` 环境变量 → exe 递归上溯 poppler 目录 → cwd 相对路径 → PATH。
-- **PDF 合并策略**：每两张发票拼为一页 A4（上下各半页），奇数时末尾单张居中。
-- **配置文件**：运行时写入 exe 同级 `config/` 目录（`config_store.rs`），首次启动从 bundle resources 复制。
-- **映射表字段**：mapping.json 每条记录必须有 `项目名称`、`通用项目名称`、`大类别`、`报销类别` 四个 key。
+## 关键约束
 
-## 注意事项
+### Poppler 依赖
+- 应用运行时需要 `pdftotext.exe` 和 `pdftocairo.exe`
+- 路径查找逻辑：从 exe 目录向上递归 5 层，查找 `poppler/Library/bin/` 或 `resources/poppler/Library/bin/`
+- 开发时需确保 poppler 二进制文件在正确位置
 
-- Vite dev server 固定端口 `1420`（`strictPort: true`），HMR 端口 `1421`。Vite 忽略 `src-tauri/` 的文件变更。
-- 前端不使用 `@tauri-apps/api` 的 `invoke`，而是通过 `src/bridge.js` 统一调用 `window.__TAURI_INTERNALS__.invoke`。
-- `main.rs` 的 `#![windows_subsystem = "windows"]` 属性不要删除，它阻止 release 模式弹出控制台窗口。
-- Rust 测试（`src-tauri/` 下 `cargo test`）依赖 `需求文档/` 目录下有真实 PDF 文件，该目录在 `.gitignore` 中，CI 环境会跳过。
-- NSIS 安装脚本 `nsis/installer.nsh` 自定义了中文快捷方式，安装到 `$PROGRAMFILES64\invoice-assistant`。
-- 文件编码统一 UTF-8。所有面向用户的文本为中文。
+### Windows 构建
+- 需要 Visual Studio Build Tools 和 Windows SDK
+- `_build.bat` 设置了编译环境变量
+- Release 配置: `opt-level = "s"`, LTO 启用, strip 符号
+
+### 配置存储
+- 使用 `tauri-plugin-fs` 访问用户目录
+- 配置文件位置: `%APPDATA%/com.monarch.invoice-assistant/`
+- 包含 `category.json` (报销类别) 和 `mapping.json` (映射关系)
+
+## 常见问题
+
+### PDF 解析失败
+- 检查 poppler 二进制文件是否正确打包
+- 查看 `debug_pdf` 命令输出的调试信息
+
+### 前端热更新不工作
+- 确保 `vite.config.js` 中 `server.port` 为 1420
+- HMR 使用 WebSocket 端口 1421
+
+### 构建失败
+- 检查 Rust 工具链: `rustc --version` (需要 1.77+)
+- 检查 Node.js 版本
+- 清理缓存: `rm -rf src-tauri/target`
+
+## 代码规范
+- 文件编码统一: UTF-8
+- 前端使用 Preact hooks 模式
+- Rust 命令使用 `#[tauri::command]` 宏
+- 错误处理: 前端用 toast 提示，后端返回 `Result<T, String>`
+
+## Git 规范
+- 默认分支: `main`
+- 发布包位置: `releases/` 目录（使用 mv 而非 cp）
+- 不提交: `node_modules/`, `src-tauri/target/`, `releases/`

@@ -42,6 +42,7 @@ Thumbs.db
 releases/
 需求说明/
 需求文档/
+测试数据/
 .reasonix/
 test_merge_probe/
 test_merge/
