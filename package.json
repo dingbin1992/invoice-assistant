@@ -1,6 +1,6 @@
 {
   "name": "invoice-assistant",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "发票助手 - PDF 发票批量处理工具",
   "type": "module",
   "private": true,
