@@ -1,10 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::config_store::{category_path, ensure_initial_config, get_config_dir, mapping_path};
-use crate::invoice_parser::ParsedInvoice;
+use crate::invoice_parser::{ParsedInvoice, PdfEntry};
 use crate::invoice_parser as parser;
 use crate::pdf_merge as merger;
 
@@ -71,25 +71,47 @@ pub fn open_directory(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn list_pdfs(path: String) -> Result<Vec<String>, String> {
-    let p = PathBuf::from(&path);
-    if !p.is_dir() {
+pub fn list_pdfs(path: String) -> Result<Vec<PdfEntry>, String> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
         return Err(format!("工作目录不存在: {}", path));
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&p).map_err(|e| e.to_string())? {
+    // 只扫描子文件夹，文件夹名即报销人
+    for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
+        let ep = entry.path();
+        if ep.is_dir() {
+            let owner = ep.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            collect_pdfs_recursive(&ep, &owner, &mut out);
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+fn collect_pdfs_recursive(dir: &Path, owner: &str, out: &mut Vec<PdfEntry>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
         let ep = entry.path();
         if ep.is_file() {
             if let Some(ext) = ep.extension() {
                 if ext.eq_ignore_ascii_case("pdf") {
-                    out.push(ep.to_string_lossy().to_string());
+                    out.push(PdfEntry {
+                        path: ep.to_string_lossy().to_string(),
+                        owner: owner.to_string(),
+                    });
                 }
             }
+        } else if ep.is_dir() {
+            collect_pdfs_recursive(&ep, owner, out);
         }
     }
-    out.sort();
-    Ok(out)
 }
 
 fn dirs_home() -> Option<String> {
@@ -157,6 +179,13 @@ pub fn export_mapping(app: AppHandle, dest: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+pub fn get_mapping_path(app: AppHandle) -> Result<String, String> {
+    let _ = ensure_initial_config(&app);
+    let p = mapping_path(&app)?;
+    Ok(p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 pub fn read_category(app: AppHandle) -> Result<serde_json::Value, String> {
     let _ = ensure_initial_config(&app);
     let p = category_path(&app)?;
@@ -165,7 +194,7 @@ pub fn read_category(app: AppHandle) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub fn import_invoices(_app: AppHandle, paths: Vec<String>) -> Vec<ParsedInvoice> {
+pub fn import_invoices(app: AppHandle, entries: Vec<PdfEntry>) -> Vec<ParsedInvoice> {
     // 从安装目录向上递归搜索 pdftotext
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -184,7 +213,35 @@ pub fn import_invoices(_app: AppHandle, paths: Vec<String>) -> Vec<ParsedInvoice
             }
         }
     }
-    parser::import_invoices(paths)
+    // 加载 mapping.json 用于自动匹配报销类别
+    let mappings = load_mapping_for_match(&app);
+    parser::import_invoices(entries, mappings)
+}
+
+fn load_mapping_for_match(app: &AppHandle) -> Vec<parser::MappingRule> {
+    let _ = ensure_initial_config(app);
+    let p = match mapping_path(app) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let s = match std::fs::read_to_string(&p) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&s) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    arr.iter().filter_map(|item| {
+        let obj = item.as_object()?;
+        let pattern = obj.get("项目名称")?.as_str()?.to_string();
+        let category = obj.get("报销类别")?.as_str()?.to_string();
+        Some(parser::MappingRule { pattern, category })
+    }).collect()
 }
 
 #[tauri::command]

@@ -3,7 +3,7 @@ import { invoke } from './bridge.js';
 
 const REQUIRED_KEYS = ['项目名称', '通用项目名称', '大类别', '报销类别'];
 
-export function ConfigView({ mode, onClose, addLog, showToast, categoryList }) {
+export function ConfigView({ mode, onClose, addLog, showToast, categoryList, configPath }) {
   const isEdit = mode === 'edit';
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(false);
@@ -31,6 +31,17 @@ export function ConfigView({ mode, onClose, addLog, showToast, categoryList }) {
     setDirty(true);
   };
   const saveAll = async () => {
+    // 验证项目名称不能重复
+    const patterns = rows.map(r => (r['项目名称'] || '').trim()).filter(Boolean);
+    const seen = new Set();
+    for (const p of patterns) {
+      if (seen.has(p)) {
+        showToast(`项目名称重复: ${p}`, 'error');
+        addLog(`保存失败: 项目名称 "${p}" 重复`, 'error');
+        return;
+      }
+      seen.add(p);
+    }
     try {
       await invoke('write_mapping', { data: rows });
       setDirty(false);
@@ -60,6 +71,11 @@ export function ConfigView({ mode, onClose, addLog, showToast, categoryList }) {
             <button class="btn-action" onClick={onClose}>关闭</button>
           </div>
         </div>
+        {configPath && (
+          <div style="padding:8px 24px;background:var(--bg-3);border-bottom:1px solid var(--border);font-size:13px;color:var(--text-muted);word-break:break-all;">
+            配置文件: {configPath}
+          </div>
+        )}
         <div class="modal-body">
           <table class="config-table">
             <thead>

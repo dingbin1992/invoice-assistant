@@ -37,7 +37,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "poppler/**/*"
+      "poppler/**/*",
+      "config/**/*"
     ],
     "targets": [
       "nsis",

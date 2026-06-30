@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 /// 由 Tauri 命令层在导入前设置，确保运行时能找到 pdftotext
@@ -12,6 +12,17 @@ static PDFTOTEXT_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_pdftotext_path(path: PathBuf) {
     let _ = PDFTOTEXT_PATH.set(path);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfEntry {
+    pub path: String,
+    pub owner: String,
+}
+
+pub struct MappingRule {
+    pub pattern: String,
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,17 +36,18 @@ pub struct ParsedInvoice {
     pub buyer: String,
     pub project_name: String,
     pub category: String,
+    pub owner: String,
     pub is_invoice_pdf: bool,
     pub error: Option<String>,
     /// 调试用: 提取到的原始文本前200字符
     pub debug_text: String,
 }
 
-pub fn import_invoices(paths: Vec<String>) -> Vec<ParsedInvoice> {
-    paths.into_iter().map(|p| parse_one(&p)).collect()
+pub fn import_invoices(entries: Vec<PdfEntry>, mappings: Vec<MappingRule>) -> Vec<ParsedInvoice> {
+    entries.into_iter().map(|e| parse_one(&e.path, &e.owner, &mappings)).collect()
 }
 
-fn parse_one(path: &str) -> ParsedInvoice {
+fn parse_one(path: &str, owner: &str, mappings: &[MappingRule]) -> ParsedInvoice {
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -50,6 +62,7 @@ fn parse_one(path: &str) -> ParsedInvoice {
         buyer: String::new(),
         project_name: String::new(),
         category: String::new(),
+        owner: owner.to_string(),
         is_invoice_pdf: false,
         error: None,
         debug_text: String::new(),
@@ -85,6 +98,10 @@ fn parse_one(path: &str) -> ParsedInvoice {
     // 如果 buyer 为空，尝试从文件名提取
     if inv.buyer.is_empty() {
         inv.buyer = extract_buyer_from_filename(&inv.file_name);
+    }
+    // 自动匹配报销类别
+    if inv.is_invoice_pdf && !inv.project_name.is_empty() {
+        inv.category = match_category(&inv.project_name, mappings);
     }
     inv
 }
@@ -343,6 +360,40 @@ static RE_PROJECT: Lazy<Regex> = Lazy::new(|| {
 fn extract_project_name(text: &str) -> String {
     if let Some(c) = RE_PROJECT.captures(text) {
         return c[1].trim().to_string();
+    }
+    String::new()
+}
+
+/// 将 mapping 的项目名称模式转为正则表达式
+/// 支持 `*通配符*` 和 `|` 分隔的多模式
+/// 例如: `*汽油*|*燃油*` → `(?i)汽油|燃油`
+fn pattern_to_regex(pattern: &str) -> Option<Regex> {
+    let parts: Vec<&str> = pattern.split('|').collect();
+    let mut regex_parts = Vec::new();
+    for part in parts {
+        let trimmed = part.trim();
+        if trimmed.is_empty() { continue; }
+        // 将 * 替换为空，用作子串匹配
+        let cleaned = trimmed.replace('*', "");
+        if cleaned.is_empty() { continue; }
+        // 转义正则特殊字符
+        let escaped = regex::escape(&cleaned);
+        regex_parts.push(escaped);
+    }
+    if regex_parts.is_empty() { return None; }
+    let combined = regex_parts.join("|");
+    Regex::new(&combined).ok()
+}
+
+fn match_category(project_name: &str, mappings: &[MappingRule]) -> String {
+    // 清理 project_name 中的 * 号
+    let clean_name = project_name.replace('*', "");
+    for rule in mappings {
+        if let Some(re) = pattern_to_regex(&rule.pattern) {
+            if re.is_match(&clean_name) {
+                return rule.category.clone();
+            }
+        }
     }
     String::new()
 }

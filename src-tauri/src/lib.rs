@@ -22,6 +22,7 @@ pub fn run() {
             write_mapping,
             import_mapping,
             export_mapping,
+            get_mapping_path,
             read_category,
             merge_pdfs,
             debug_pdf,
