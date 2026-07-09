@@ -28,6 +28,7 @@ encoding_rs = "0.8"
 unicode-normalization = "0.1"
 printpdf = { version = "0.7", features = ["embedded_images"] }
 image = "0.24"
+chrono = "0.4"
 
 [profile.release]
 panic = "abort"

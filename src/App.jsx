@@ -217,8 +217,37 @@ export function App() {
     setInvoices(prev => prev.map(r => filteredFiles.has(r.file) ? { ...r, _selected: val } : r));
   };
 
-  const exportLedger = () => showToast('费用台账输出功能待模板确认后启用', 'info');
-  const exportCover = () => showToast('报销封面输出功能待模板确认后启用', 'info');
+  const exportLedger = async () => {
+    const selected = invoices.filter(r => r._selected && r.is_invoice_pdf);
+    if (!selected.length) { showToast('请先勾选要生成费用台账的发票', 'error'); return; }
+    if (!outputDir) { showToast('请先选择输出目录', 'error'); return; }
+    try {
+      addLog(`开始生成费用台账: ${selected.length} 张发票`, 'info');
+      const result = await invoke('generate_ledger_pdf', { invoices: selected, outputDir });
+      addLog(`费用台账生成完成,共生成 ${result.total} 个文件`, 'success');
+      showToast(`费用台账生成完成: ${result.total} 个文件`, 'success');
+    } catch (e) {
+      showToast(`费用台账生成失败: ${e}`, 'error');
+      addLog(`费用台账生成失败: ${e}`, 'error');
+    }
+  };
+  
+  const [coverOutputFormat, setCoverOutputFormat] = useState('pdf'); // 'xlsx', 'pdf', 'both'
+
+  const exportCover = async () => {
+    const selected = invoices.filter(r => r._selected && r.is_invoice_pdf);
+    if (!selected.length) { showToast('请先勾选要生成报销封面的发票', 'error'); return; }
+    if (!outputDir) { showToast('请先选择输出目录', 'error'); return; }
+    try {
+      addLog(`开始生成报销封面: ${selected.length} 张发票`, 'info');
+      const result = await invoke('generate_cover_pdf', { invoices: selected, outputDir, outputFormat: coverOutputFormat });
+      addLog(`报销封面生成完成,共生成 ${result.total} 个文件`, 'success');
+      showToast(`报销封面生成完成: ${result.total} 个文件`, 'success');
+    } catch (e) {
+      showToast(`报销封面生成失败: ${e}`, 'error');
+      addLog(`报销封面生成失败: ${e}`, 'error');
+    }
+  };
 
   const matchCategories = async () => {
     const unmatched = invoices.filter(r => r.is_invoice_pdf && (!r.category || !r.category.trim()));
@@ -264,6 +293,8 @@ export function App() {
     if (!selected.length) { showToast('请先勾选要合并的发票', 'error'); return; }
     if (!outputDir) { showToast('请先选择输出目录', 'error'); return; }
     try {
+      // 创建汇总PDF子目录
+      const mergeDir = `${outputDir}/汇总PDF`;
       // 按报销人+购买方分组
       const groups = {};
       for (const r of selected) {
@@ -280,7 +311,7 @@ export function App() {
         const { owner, buyer, files } = groups[key];
         const prefix = `合并发票_${owner}_${buyer}(${files.length}张)`;
         addLog(`合并 ${prefix}: ${files.length} 张`, 'info');
-        const r = await invoke('merge_pdfs', { inputFiles: files, outputDir, filePrefix: prefix });
+        const r = await invoke('merge_pdfs', { inputFiles: files, outputDir: mergeDir, filePrefix: prefix });
         totalFiles += r.total;
       }
       addLog(`合并完成,共生成 ${totalFiles} 个汇总文件`, 'success');
@@ -486,6 +517,11 @@ export function App() {
         <div class="btn-row">
           <button class="btn-action" onClick={exportLedger}>输出费用台账</button>
           <button class="btn-action" onClick={exportCover}>输出报销封面</button>
+          <select class="btn-select" value={coverOutputFormat} onChange={e => setCoverOutputFormat(e.currentTarget.value)}>
+            <option value="pdf">仅 PDF</option>
+            <option value="xlsx">仅 xlsx</option>
+            <option value="both">xlsx + PDF</option>
+          </select>
           <button class="btn-action warn" onClick={mergePdfs}>输出汇总PDF</button>
         </div>
       </div>

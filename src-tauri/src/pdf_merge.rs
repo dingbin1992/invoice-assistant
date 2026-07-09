@@ -243,7 +243,76 @@ fn pdf_to_png(pdf_path: &str) -> Result<String, String> {
     if !Path::new(&png_path).exists() {
         return Err("pdftocairo 未生成 PNG 文件".into());
     }
+
+    // 裁剪图片，去掉底部可能存在的水印（如"didi"）
+    let cropped_path = format!("{}_cropped.png", tmp_base);
+    if crop_bottom_watermark(&png_path, &cropped_path)? {
+        // 裁剪成功，删除原图，使用裁剪后的图片
+        std::fs::remove_file(&png_path).ok();
+        return Ok(cropped_path);
+    }
+
     Ok(png_path)
+}
+
+/// 裁剪图片顶部和底部的页眉页脚
+fn crop_bottom_watermark(original_path: &str, cropped_path: &str) -> Result<bool, String> {
+    let mut img = image::open(original_path).map_err(|e| format!("读取图片失败: {}", e))?;
+    let (w, h) = img.dimensions();
+
+    let threshold = 240; // 接近白色的阈值
+
+    // 扫描顶部，找到内容开始的位置（从顶部向下扫描，找到非白色行）
+    let mut content_top = 0u32;
+    for y in 0..h {
+        let mut has_content = false;
+        for x in (0..w).step_by(10) {
+            let pixel = img.get_pixel(x, y);
+            let r = pixel[0] as u32;
+            let g = pixel[1] as u32;
+            let b = pixel[2] as u32;
+            if r < threshold || g < threshold || b < threshold {
+                has_content = true;
+                break;
+            }
+        }
+        if has_content {
+            content_top = y;
+            break;
+        }
+    }
+
+    // 扫描底部，找到内容结束的位置（从底部向上扫描，找到非白色行）
+    let mut content_bottom = h;
+    for y in (0..h).rev() {
+        let mut has_content = false;
+        for x in (0..w).step_by(10) {
+            let pixel = img.get_pixel(x, y);
+            let r = pixel[0] as u32;
+            let g = pixel[1] as u32;
+            let b = pixel[2] as u32;
+            if r < threshold || g < threshold || b < threshold {
+                has_content = true;
+                break;
+            }
+        }
+        if has_content {
+            content_bottom = y + 1;
+            break;
+        }
+    }
+
+    // 裁剪图片
+    if content_top > 0 || content_bottom < h {
+        let new_height = content_bottom - content_top;
+        if new_height > 0 && new_height < h {
+            let cropped = img.crop(0, content_top, w, new_height);
+            cropped.save(cropped_path).map_err(|e| format!("保存裁剪图片失败: {}", e))?;
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn locate_pdftocairo() -> Option<PathBuf> {

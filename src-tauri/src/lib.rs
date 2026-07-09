@@ -1,5 +1,6 @@
 mod commands;
 mod config_store;
+mod cover_generator;
 mod invoice_parser;
 mod pdf_merge;
 
@@ -26,6 +27,8 @@ pub fn run() {
             read_category,
             merge_pdfs,
             debug_pdf,
+            generate_cover_pdf,
+            generate_ledger_pdf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

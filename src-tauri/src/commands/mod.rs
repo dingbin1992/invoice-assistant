@@ -7,6 +7,7 @@ use crate::config_store::{category_path, ensure_initial_config, get_config_dir, 
 use crate::invoice_parser::{ParsedInvoice, PdfEntry};
 use crate::invoice_parser as parser;
 use crate::pdf_merge as merger;
+use crate::cover_generator as cover_gen;
 
 #[tauri::command]
 pub fn get_initial_paths(app: AppHandle) -> Result<serde_json::Value, String> {
@@ -274,4 +275,44 @@ pub fn merge_pdfs(
 #[tauri::command]
 pub fn debug_pdf(path: String) -> Result<String, String> {
     merger::debug_pdf(&path)
+}
+
+#[tauri::command]
+pub fn generate_cover_pdf(
+    invoices: Vec<parser::ParsedInvoice>,
+    output_dir: String,
+    output_format: String,
+) -> Result<merger::MergeResult, String> {
+    // 创建报销封面子目录
+    let cover_dir = format!("{}/报销封面", output_dir);
+    std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
+
+    // 调用Python脚本生成报销封面
+    let out_files = cover_gen::generate_cover(&invoices, &cover_dir, &output_format)?;
+    let total_files = out_files.len();
+
+    Ok(merger::MergeResult {
+        total: total_files,
+        output_dir: cover_dir,
+        files: out_files,
+    })
+}
+
+#[tauri::command]
+pub fn generate_ledger_pdf(
+    invoices: Vec<parser::ParsedInvoice>,
+    output_dir: String,
+) -> Result<merger::MergeResult, String> {
+    // 确保输出目录存在
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
+
+    // 调用Python脚本生成费用台账
+    let out_files = cover_gen::generate_ledger(&invoices, &output_dir)?;
+    let total_files = out_files.len();
+
+    Ok(merger::MergeResult {
+        total: total_files,
+        output_dir,
+        files: out_files,
+    })
 }

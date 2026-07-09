@@ -25,7 +25,7 @@ pub struct MappingRule {
     pub category: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedInvoice {
     pub file: String,
     pub file_name: String,
@@ -266,15 +266,42 @@ fn extract_invoice_no(text: &str) -> String {
 }
 
 static RE_AMOUNT: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[（(]\s*小写\s*[)）]\s*¥?\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})")
+    Regex::new(r"[（(]\s*小\s*写\s*[)）]\s*¥?\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})")
         .unwrap()
 });
+/// 将全角数字和全角小数点转换为半角
+fn normalize_fullwidth_numbers(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '０'..='９' => (c as u32 - '０' as u32 + '0' as u32) as u8 as char,
+            '．' => '.',
+            '，' => ',',
+            '：' => ':',
+            '；' => ';',
+            '（' => '(',
+            '）' => ')',
+            '＊' => '*',
+            '＋' => '+',
+            '－' => '-',
+            '／' => '/',
+            '＝' => '=',
+            _ => c,
+        })
+        .collect()
+}
+
 fn extract_amount(text: &str) -> String {
     if let Some(c) = RE_AMOUNT.captures(text) {
         return c[1].replace(',', "");
     }
-    let re2 = Regex::new(r"¥\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})").unwrap();
+    let re2 = Regex::new(r"[¥￥]\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})").unwrap();
     if let Some(c) = re2.captures(text) {
+        return c[1].replace(',', "");
+    }
+    // 处理全角数字和全角小数点
+    let normalized = normalize_fullwidth_numbers(text);
+    let re3 = Regex::new(r"[¥￥]\s*([0-9]+(?:,[0-9]{3})*\.[0-9]{2})").unwrap();
+    if let Some(c) = re3.captures(&normalized) {
         return c[1].replace(',', "");
     }
     String::new()

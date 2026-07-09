@@ -38,7 +38,9 @@
     ],
     "resources": [
       "poppler/**/*",
-      "config/**/*"
+      "config/**/*",
+      "template/**/*",
+      "output_py_tools/**/*"
     ],
     "targets": [
       "nsis",
