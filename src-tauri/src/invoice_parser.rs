@@ -308,23 +308,23 @@ fn extract_amount(text: &str) -> String {
 }
 
 static RE_BUYER_NAME: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"购\s*名称[：:]\s*([^\n\r]+?)\s{2,}").unwrap()
+    Regex::new(r"购\s*名\s*称[：:]\s*([^\n\r]+?)\s{2,}").unwrap()
 });
 static RE_BUYER_NAME2: Lazy<Regex> = Lazy::new(|| {
     // 兼容 dzfp_ 类 PDF: "购"与"名称"分两行, 实际字段为"买 名称："
     // 终止条件: 2+空格 或 售/销名称 (兼容 pdftotext 和 lopdf)
-    Regex::new(r"买\s*名称[：:]\s*(.+?)\s{2,}").unwrap()
+    Regex::new(r"买\s*名\s*称[：:]\s*(.+?)\s{2,}").unwrap()
 });
 static RE_BUYER_NAME2_LOOSE: Lazy<Regex> = Lazy::new(|| {
     // lopdf 回退: 公司名后没有双空格, 以"售"或"销"为边界
-    Regex::new(r"买\s*名称[：:]\s*(.+?)\s*[售销]\s*名称").unwrap()
+    Regex::new(r"买\s*名\s*称[：:]\s*(.+?)\s*[售销]\s*名\s*称").unwrap()
 });
 static RE_BUYER_NAME3: Lazy<Regex> = Lazy::new(|| {
     // 购买方名称 (火车票及部分普通发票格式)
     Regex::new(r"购买方名称[：:]\s*([^\n\r]+)").unwrap()
 });
 static RE_BUYER_NAKED: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"名称[：:]\s*(.+?)\s+名称[：:]").unwrap()
+    Regex::new(r"名\s*称[：:]\s*(.+?)\s+名\s*称[：:]").unwrap()
 });
 fn extract_buyer(text: &str) -> String {
     // 1. 购 名称
@@ -342,7 +342,7 @@ fn extract_buyer(text: &str) -> String {
     // 3. 买 名称 (pdftotext: 双空格终止)
     if let Some(c) = RE_BUYER_NAME2.captures(text) {
         let val = c[1].trim().to_string();
-        if !val.starts_with("售") && !val.contains("售 名称") {
+        if !val.starts_with("售") && !val.contains("售 名称") && !val.contains("售 名 称") {
             return val;
         }
     }
@@ -471,22 +471,34 @@ mod tests {
 
     #[test]
     fn test_parse_all_pdfs() {
-        let pdf_dir = std::path::Path::new("需求文档");
+        let pdf_dir = std::path::Path::new("测试数据");
         if !pdf_dir.exists() {
-            eprintln!("需求文档 dir not found, skipping test");
+            eprintln!("测试数据 dir not found, skipping test");
             return;
         }
         let mut paths = Vec::new();
+        // 递归遍历所有子目录
         for entry in std::fs::read_dir(pdf_dir).unwrap() {
             let entry = entry.unwrap();
             let p = entry.path();
-            if p.extension().map(|e| e == "pdf").unwrap_or(false) {
-                paths.push(p.to_string_lossy().to_string());
+            if p.is_dir() {
+                for inner_entry in std::fs::read_dir(&p).unwrap() {
+                    let inner_entry = inner_entry.unwrap();
+                    let inner_p = inner_entry.path();
+                    if inner_p.extension().map(|e| e == "pdf").unwrap_or(false) {
+                        paths.push(inner_p.to_string_lossy().to_string());
+                    }
+                }
             }
         }
         paths.sort();
         println!("\n=== 解析 {} 个 PDF ===", paths.len());
-        let results = import_invoices(paths);
+        // 转换为PdfEntry结构
+        let entries: Vec<PdfEntry> = paths.into_iter().map(|p| PdfEntry {
+            path: p,
+            owner: "测试".to_string(),
+        }).collect();
+        let results = import_invoices(entries, vec![]);
         for (i, inv) in results.iter().enumerate() {
             println!("\n--- PDF {}: {} ---", i + 1, inv.file_name);
             println!("  is_invoice_pdf: {}", inv.is_invoice_pdf);
