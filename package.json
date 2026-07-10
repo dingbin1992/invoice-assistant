@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "copy:py": "xcopy /E /I /Y src\\output_py_tools src-tauri\\output_py_tools",
+    "tauri:build": "npm run copy:py && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",

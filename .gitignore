@@ -45,4 +45,5 @@ releases/
 .reasonix/
 test_merge_probe/
 test_merge/
+test_scripts/
 output/

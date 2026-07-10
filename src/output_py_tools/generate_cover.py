@@ -55,13 +55,22 @@ def amount_to_chinese_words(amount):
     
     return result
 
+def get_department(buyer):
+    """根据购买方公司名称确定部门"""
+    if "荆州市益先森驰商务服务有限公司" in buyer:
+        return "荆州"
+    elif "武汉市君瑞博成商务服务有限公司" in buyer:
+        return "武汉"
+    else:
+        return "其他"
+
 def generate_cover(invoices, output_dir, owner, buyer, output_format='both'):
     """基于xlsx模板生成报销封面，根据output_format生成xlsx/pdf/两种格式"""
     # 获取脚本所在目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     # 上一级目录（和template同级）
     parent_dir = os.path.dirname(script_dir)
-    
+
     # 查找模板文件（在上一级目录的template子目录中）
     template_filename = "费用报销审批单模板.xlsx"
     template_path = os.path.join(parent_dir, "template", template_filename)
@@ -71,12 +80,20 @@ def generate_cover(invoices, output_dir, owner, buyer, output_format='both'):
     if not os.path.exists(template_path):
         print(f"错误: 找不到模板文件 {template_filename}")
         return []
-    
+
     wb = load_workbook(template_path)
     ws = wb['Sheet1']
-    
-    # 报销部门留空（打印后手写签字）
-    ws['A2'] = "报销部门："
+
+    # 根据购买方公司名称自动填充报销部门
+    department = get_department(buyer)
+    ws['A2'] = f"报销部门：{department}"
+
+    # 填充报销人（报销人后面按报销人填充）
+    ws['G12'] = f"报销人：{owner}"
+
+    # 审批人、复核人留空（打印后手写签字）
+    ws['A12'] = "审批人："
+    ws['D12'] = "复核人："
     
     # 按报销类别分组计算金额
     category_amounts = {}

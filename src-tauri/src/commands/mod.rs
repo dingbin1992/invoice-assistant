@@ -6,7 +6,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::config_store::{category_path, ensure_initial_config, get_config_dir, mapping_path};
 use crate::invoice_parser::{ParsedInvoice, PdfEntry};
 use crate::invoice_parser as parser;
-use crate::pdf_merge as merger;
+use crate::py_merge as py_merger;
 use crate::cover_generator as cover_gen;
 
 #[tauri::command]
@@ -250,31 +250,8 @@ pub fn merge_pdfs(
     input_files: Vec<String>,
     output_dir: String,
     file_prefix: String,
-) -> Result<merger::MergeResult, String> {
-    // 从安装目录向上递归搜索 pdftocairo
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-        'outer: for _ in 0..5 {
-            for sub in &["poppler/Library/bin/pdftocairo.exe", "resources/poppler/Library/bin/pdftocairo.exe"] {
-                let cand = dir.join(sub);
-                if cand.exists() {
-                    merger::set_pdftocairo_path(cand);
-                    break 'outer;
-                }
-            }
-            if let Some(parent) = dir.parent() {
-                dir = parent.to_path_buf();
-            } else {
-                break;
-            }
-        }
-    }
-    merger::merge_pdfs(input_files, output_dir, file_prefix)
-}
-
-#[tauri::command]
-pub fn debug_pdf(path: String) -> Result<String, String> {
-    merger::debug_pdf(&path)
+) -> Result<py_merger::MergeResult, String> {
+    py_merger::merge_pdfs(input_files, output_dir, file_prefix)
 }
 
 #[tauri::command]
@@ -282,7 +259,7 @@ pub fn generate_cover_pdf(
     invoices: Vec<parser::ParsedInvoice>,
     output_dir: String,
     output_format: String,
-) -> Result<merger::MergeResult, String> {
+) -> Result<py_merger::MergeResult, String> {
     // 创建报销封面子目录
     let cover_dir = format!("{}/报销封面", output_dir);
     std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
@@ -291,7 +268,7 @@ pub fn generate_cover_pdf(
     let out_files = cover_gen::generate_cover(&invoices, &cover_dir, &output_format)?;
     let total_files = out_files.len();
 
-    Ok(merger::MergeResult {
+    Ok(py_merger::MergeResult {
         total: total_files,
         output_dir: cover_dir,
         files: out_files,
@@ -302,7 +279,7 @@ pub fn generate_cover_pdf(
 pub fn generate_ledger_pdf(
     invoices: Vec<parser::ParsedInvoice>,
     output_dir: String,
-) -> Result<merger::MergeResult, String> {
+) -> Result<py_merger::MergeResult, String> {
     // 确保输出目录存在
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
@@ -310,7 +287,7 @@ pub fn generate_ledger_pdf(
     let out_files = cover_gen::generate_ledger(&invoices, &output_dir)?;
     let total_files = out_files.len();
 
-    Ok(merger::MergeResult {
+    Ok(py_merger::MergeResult {
         total: total_files,
         output_dir,
         files: out_files,

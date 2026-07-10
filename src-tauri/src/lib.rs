@@ -2,7 +2,7 @@ mod commands;
 mod config_store;
 mod cover_generator;
 mod invoice_parser;
-mod pdf_merge;
+mod py_merge;
 
 use commands::*;
 
@@ -26,7 +26,6 @@ pub fn run() {
             get_mapping_path,
             read_category,
             merge_pdfs,
-            debug_pdf,
             generate_cover_pdf,
             generate_ledger_pdf,
         ])
