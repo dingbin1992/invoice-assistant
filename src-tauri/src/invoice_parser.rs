@@ -326,36 +326,55 @@ static RE_BUYER_NAME3: Lazy<Regex> = Lazy::new(|| {
 static RE_BUYER_NAKED: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"名\s*称[：:]\s*(.+?)\s+名\s*称[：:]").unwrap()
 });
+/// 数电票文本层字距大，pdftotext -layout 会在中文字符间插入空格（如 "武 汉 市"）。
+/// 删除中文字符之间的空格；英文/数字之间的空格保留，避免误伤。
+/// 注意: regex crate 不支持 look-around, 故用字符遍历实现。
+fn clean_cjk_spaces(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let is_cjk = |c: char| ('\u{4e00}'..='\u{9fff}').contains(&c);
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_whitespace() {
+            let prev = if i > 0 { chars[i - 1] } else { '\0' };
+            let next = if i + 1 < chars.len() { chars[i + 1] } else { '\0' };
+            if is_cjk(prev) && is_cjk(next) {
+                continue; // 中文字符之间的空格, 丢弃
+            }
+        }
+        out.push(c);
+    }
+    out
+}
 fn extract_buyer(text: &str) -> String {
     // 1. 购 名称
     if let Some(c) = RE_BUYER_NAME.captures(text) {
-        return c[1].trim().to_string();
+        return clean_cjk_spaces(c[1].trim());
     }
     // 2. 购买方名称
     if let Some(c) = RE_BUYER_NAME3.captures(text) {
         let raw = c[1].trim();
         if let Some(pos) = raw.find("统一社会信用代码") {
-            return raw[..pos].trim().to_string();
+            return clean_cjk_spaces(&raw[..pos].trim());
         }
-        return raw.to_string();
+        return clean_cjk_spaces(raw);
     }
     // 3. 买 名称 (pdftotext: 双空格终止)
     if let Some(c) = RE_BUYER_NAME2.captures(text) {
         let val = c[1].trim().to_string();
         if !val.starts_with("售") && !val.contains("售 名称") && !val.contains("售 名 称") {
-            return val;
+            return clean_cjk_spaces(&val);
         }
     }
     // 4. 买 名称 (lopdf 回退: 以售/销名称为边界)
     if let Some(c) = RE_BUYER_NAME2_LOOSE.captures(text) {
         let val = c[1].trim().to_string();
         if !val.is_empty() && !val.starts_with("售") {
-            return val;
+            return clean_cjk_spaces(&val);
         }
     }
     // 5. 裸露名称 (无购/买前缀, 第一个名称=买方, 第二个名称=卖方)
     if let Some(c) = RE_BUYER_NAKED.captures(text) {
-        return c[1].trim().to_string();
+        return clean_cjk_spaces(c[1].trim());
     }
     String::new()
 }
@@ -468,6 +487,37 @@ fn train_extract_buyer(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 数电票文本层字距大导致 pdftotext 在字间插入空格，应还原
+    #[test]
+    fn test_clean_cjk_spaces() {
+        assert_eq!(clean_cjk_spaces("武 汉 市 君 瑞 博 成 商 务服务有限公司"), "武汉市君瑞博成商务服务有限公司");
+        // 英文/数字之间的空格应保留
+        assert_eq!(clean_cjk_spaces("ABC 123 CO."), "ABC 123 CO.");
+    }
+
+    /// 复现: dzfp_26424000000103186681 购买方名称字间带空格
+    #[test]
+    fn test_dzfp_wide_spacing_buyer() {
+        // cargo test 可能在项目根或 src-tauri 下运行
+        let candidates = [
+            "测试数据/丁斌/dzfp_26424000000103186681_武汉市东西湖区尚轩品汇酒店管理中心（个体工商户）_20260806212124.pdf",
+            "../测试数据/丁斌/dzfp_26424000000103186681_武汉市东西湖区尚轩品汇酒店管理中心（个体工商户）_20260806212124.pdf",
+        ];
+        let pdf = candidates.iter().find(|p| std::path::Path::new(p).exists());
+        let pdf = match pdf {
+            Some(p) => *p,
+            None => {
+                eprintln!("测试数据未找到, 跳过 test_dzfp_wide_spacing_buyer");
+                return;
+            }
+        };
+        // pdftotext 的 current_dir 是 poppler 目录, 相对路径会解析错, 转成绝对路径
+        let pdf = std::path::Path::new(pdf).canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(pdf));
+        let inv = parse_one(&pdf.to_string_lossy(), "测试", &[]);
+        assert_eq!(inv.buyer, "武汉市君瑞博成商务服务有限公司");
+    }
 
     #[test]
     fn test_parse_all_pdfs() {
