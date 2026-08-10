@@ -187,43 +187,71 @@ def generate_cover(invoices, output_dir, owner, buyer, output_format='both'):
     return output_files
 
 def convert_xlsx_to_pdf(xlsx_path, pdf_path):
-    """使用Excel将xlsx转换为PDF"""
+    """使用Excel/WPS将xlsx转换为PDF"""
     import win32com.client
-    
+    import time
+
+    abs_xlsx_path = os.path.abspath(xlsx_path)
+    abs_pdf_path = os.path.abspath(pdf_path)
+
+    # 依次尝试 ET(优先) -> KET -> Excel；每个都走完整导出流程，失败自动尝试下一个。
+    # 注意: ET.Application 是 WPS 原生接口，可能没有 ExportAsFixedFormat，故不能只看 Dispatch 是否成功。
+    last_err = None
     excel = None
     wb_excel = None
-    
+    for progid in ("ET.Application", "KET.Application", "Excel.Application"):
+        try:
+            excel = win32com.client.Dispatch(progid)
+            excel.Visible = False
+            excel.DisplayAlerts = False
+
+            # 打开xlsx文件
+            wb_excel = excel.Workbooks.Open(abs_xlsx_path)
+
+            # 导出为PDF
+            wb_excel.ExportAsFixedFormat(
+                Type=0,  # 0 = xlTypePDF
+                Filename=abs_pdf_path,
+                Quality=0,  # 0 = xlQualityStandard
+                IncludeDocProperties=True,
+                IgnorePrintAreas=False,
+                OpenAfterPublish=False
+            )
+
+            print(f"PDF转换成功: {pdf_path}")
+            break
+        except Exception as e:
+            last_err = e
+            # 清理本次尝试的资源，继续尝试下一个组件
+            try:
+                if wb_excel:
+                    wb_excel.Close(SaveChanges=False)
+            except Exception:
+                pass
+            try:
+                if excel:
+                    excel.Quit()
+            except Exception:
+                pass
+            wb_excel = None
+            excel = None
+            # 等待进程释放文件句柄，避免残留 ~$ 锁文件
+            time.sleep(1)
+    else:
+        raise RuntimeError(f"所有Excel/WPS组件导出失败: {last_err}")
+
+    # 成功: 关闭工作簿并退出应用，释放文件句柄
     try:
-        # 启动Excel
-        excel = win32com.client.Dispatch("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        
-        # 打开xlsx文件
-        abs_xlsx_path = os.path.abspath(xlsx_path)
-        wb_excel = excel.Workbooks.Open(abs_xlsx_path)
-        
-        # 导出为PDF
-        abs_pdf_path = os.path.abspath(pdf_path)
-        wb_excel.ExportAsFixedFormat(
-            Type=0,  # 0 = xlTypePDF
-            Filename=abs_pdf_path,
-            Quality=0,  # 0 = xlQualityStandard
-            IncludeDocProperties=True,
-            IgnorePrintAreas=False,
-            OpenAfterPublish=False
-        )
-        
-        print(f"PDF转换成功: {pdf_path}")
-        
-    finally:
-        # 关闭工作簿
         if wb_excel:
             wb_excel.Close(SaveChanges=False)
-        # 退出Excel
+    except Exception:
+        pass
+    try:
         if excel:
             excel.Quit()
-            excel = None
+    except Exception:
+        pass
+    time.sleep(1)
 
 def main():
     if len(sys.argv) < 5:
