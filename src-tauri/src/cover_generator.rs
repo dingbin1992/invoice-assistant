@@ -120,8 +120,8 @@ pub fn generate_cover(
             return Err(format!("Python脚本执行失败: {}", stderr));
         }
         
-        // 获取生成的文件路径
-        let base_name = format!("费用报销审批单_{}_{}", owner, buyer);
+        // 获取生成的文件路径（文件名格式: 费用报销审批单_采购方_报销人）
+        let base_name = format!("费用报销审批单_{}_{}", buyer, owner);
         let xlsx_path = format!("{}/{}.xlsx", output_dir, base_name);
         let pdf_path = format!("{}/{}.pdf", output_dir, base_name);
 

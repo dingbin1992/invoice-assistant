@@ -152,8 +152,8 @@ def generate_cover(invoices, output_dir, owner, buyer, output_format='both'):
     ws.page_setup.fitToWidth = 1  # 宽度适应1页
     ws.page_setup.fitToHeight = 1  # 高度适应1页
     
-    # 生成文件名
-    base_name = f"费用报销审批单_{owner}_{buyer}"
+    # 生成文件名（格式: 费用报销审批单_采购方_报销人）
+    base_name = f"费用报销审批单_{buyer}_{owner}"
 
     # 确保输出目录存在
     os.makedirs(output_dir, exist_ok=True)

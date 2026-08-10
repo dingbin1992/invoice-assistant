@@ -294,22 +294,22 @@ export function App() {
     if (!outputDir) { showToast('请先选择输出目录', 'error'); return; }
     try {
       // 创建汇总PDF子目录
-      const mergeDir = `${outputDir}/汇总PDF`;
-      // 按报销人+购买方分组
+      const mergeDir = `${outputDir}/_汇总PDF`;
+      // 按采购方+报销人分组
       const groups = {};
       for (const r of selected) {
         const owner = r.owner || '未分组';
         const buyer = r.buyer || '未知购买方';
-        const key = `${owner}_${buyer}`;
+        const key = `${buyer}_${owner}`;
         if (!groups[key]) groups[key] = { owner, buyer, files: [] };
         groups[key].files.push(r.file);
       }
       const keys = Object.keys(groups);
-      addLog(`开始合并 PDF: ${selected.length} 张，按报销人+购买方分为 ${keys.length} 组`, 'info');
+      addLog(`开始合并 PDF: ${selected.length} 张，按采购方+报销人分为 ${keys.length} 组`, 'info');
       let totalFiles = 0;
       for (const key of keys) {
         const { owner, buyer, files } = groups[key];
-        const prefix = `合并发票_${owner}_${buyer}(${files.length}张)`;
+        const prefix = `合并发票_${buyer}_${owner}(${files.length}张)`;
         addLog(`合并 ${prefix}: ${files.length} 张`, 'info');
         const r = await invoke('merge_pdfs', { inputFiles: files, outputDir: mergeDir, filePrefix: prefix });
         totalFiles += r.total;

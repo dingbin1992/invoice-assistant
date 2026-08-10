@@ -261,7 +261,7 @@ pub fn generate_cover_pdf(
     output_format: String,
 ) -> Result<py_merger::MergeResult, String> {
     // 创建报销封面子目录
-    let cover_dir = format!("{}/报销封面", output_dir);
+    let cover_dir = format!("{}/_报销封面", output_dir);
     std::fs::create_dir_all(&cover_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     // 调用Python脚本生成报销封面
